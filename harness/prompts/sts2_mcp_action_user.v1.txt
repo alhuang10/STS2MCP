@@ -1,0 +1,12 @@
+Step: $step
+
+valid_actions:
+$valid_actions_json
+
+Recent action history:
+$recent_history
+
+Current game state JSON:
+$state_json
+
+Pick the next single action_id now.

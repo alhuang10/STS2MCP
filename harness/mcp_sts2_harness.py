@@ -24,6 +24,13 @@ from typing import Any
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from prompt_templates import (
+    PromptBundle,
+    load_sts2_mcp_action_prompts,
+    render_system_prompt,
+    render_user_prompt,
+    sha256_text,
+)
 from sts2_harness import (
     ALIASES,
     add_llm_arguments,
@@ -60,40 +67,6 @@ LOCAL_ACTIONS = {
 }
 
 COMBAT_STATE_TYPES = {"monster", "elite", "boss"}
-
-SYSTEM_PROMPT = f"""You are playing Slay the Spire 2 through MCP tools.
-
-{GAME_CONTEXT}
-
-Return exactly one JSON object and no prose:
-{{"action_id":"ID_FROM_VALID_ACTIONS","rationale":"short public reason"}}
-
-Output format requirements:
-- Choose exactly one action_id from the valid_actions list.
-- Do not invent action ids, tool names, or arguments.
-- Do not output tool parameters. The harness already attached tool args to each action_id.
-- Keep rationale to 20 words or fewer.
-
-Valid examples:
-- {{"action_id":"card_2_strike_nibbit_0","rationale":"Attack the low HP enemy."}}
-- {{"action_id":"combat_end_turn","rationale":"No useful playable cards remain."}}
-- {{"action_id":"reward_0_card","rationale":"Open the card reward."}}
-
-Rules:
-- Choose exactly one action_id per response. The harness will fetch fresh state after every action.
-- Use the current state exactly. Use visible menu option ids and listed indices.
-- State types monster, elite, and boss are combat screens. Combat details are under battle.
-- valid_actions only contains actions the harness believes are currently legal.
-- If there are multiple enemies and you are attacking, choose a target explicitly; prefer low-HP attackers.
-- Playing cards changes hand indices. Prefer one card at a time; if planning multiple cards, play from higher indices first.
-- In combat, wait does not end the turn. If you have 0 energy or no useful playable cards, choose combat_end_turn.
-- Choose wait only for transient states where the game is already resolving and no player action is accepted.
-- On a rewards screen with rewards.items, use rewards_claim(reward_index) to take a reward, or proceed_to_map to skip remaining rewards when available.
-- Use rewards_pick_card only after card choices are visible.
-- If enemies are not attacking, prefer useful offense/setup. If lethal is available, kill rather than block.
-- If no useful action is available, choose wait. If the run is over or blocked, choose stop.
-- Do not request get_game_state. State is already provided every step.
-"""
 
 
 @dataclass(frozen=True)
@@ -735,6 +708,13 @@ def valid_actions_json(actions: list[LegalAction]) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
+def build_prompt_metadata(bundle: PromptBundle, system_prompt: str) -> Json:
+    metadata = bundle.metadata()
+    metadata["game_context_sha256"] = sha256_text(GAME_CONTEXT)
+    metadata["rendered_system_sha256"] = sha256_text(system_prompt)
+    return metadata
+
+
 def names_for(items: list[Any], *, name_keys: tuple[str, ...] = ("name", "title", "type", "category")) -> list[str]:
     labels: list[str] = []
     for item in items:
@@ -878,20 +858,16 @@ def build_user_prompt(
     max_state_chars: int,
     history: list[str],
     legal_actions: list[LegalAction],
+    prompt_bundle: PromptBundle,
 ) -> str:
     recent_history = "\n".join(history[-6:]) if history else "No prior actions in this harness run."
-    return f"""Step: {step}
-
-valid_actions:
-{valid_actions_json(legal_actions)}
-
-Recent action history:
-{recent_history}
-
-Current game state JSON:
-{compact_json(state_for_prompt(state), max_state_chars)}
-
-Pick the next single action_id now."""
+    return render_user_prompt(
+        prompt_bundle,
+        step=step,
+        valid_actions_json=valid_actions_json(legal_actions),
+        recent_history=recent_history,
+        state_json=compact_json(state_for_prompt(state), max_state_chars),
+    )
 
 
 def extract_text_content(result: Any) -> str:
@@ -1238,13 +1214,14 @@ def compact_llm_response(response: Json) -> Json:
     }
 
 
-def model_request_trace(args: argparse.Namespace, messages: list[Json]) -> Json:
+def model_request_trace(args: argparse.Namespace, messages: list[Json], prompt_metadata: Json) -> Json:
     return {
         "llm_url": args.llm_url,
         "llm_source": getattr(args, "llm_source", "custom"),
         "model": args.model,
         "temperature": args.temperature,
         "max_tokens": args.max_tokens,
+        "prompt": prompt_metadata,
         "messages": clone_messages(messages),
     }
 
@@ -1255,10 +1232,12 @@ def choose_model_action(
     tools: dict[str, ToolSpec],
     legal_actions: list[LegalAction],
     user_prompt: str,
+    system_prompt: str,
+    prompt_metadata: Json,
 ) -> tuple[str, Json, str, Json, str, Json, Json]:
     allowed_tools = legal_tools(legal_actions, tools)
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
     last_error = ""
@@ -1266,13 +1245,14 @@ def choose_model_action(
     raw_text = ""
     parsed: Json = {}
     trace: Json = {
+        "prompt": prompt_metadata,
         "valid_actions": [action.for_prompt() for action in legal_actions],
         "attempts": [],
     }
 
     for attempt in range(args.repair_attempts + 1):
         parsed = {}
-        request = model_request_trace(args, messages)
+        request = model_request_trace(args, messages, prompt_metadata)
         raw_text, raw_response = call_llm(
             args.llm_url,
             args.model,
@@ -1362,6 +1342,15 @@ async def run_async(args: argparse.Namespace) -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     log_path = log_dir / f"mcp-sts2-harness-{stamp}.jsonl"
+    prompt_version = args.prompt_version
+    system_prompt_version = args.system_prompt_version or prompt_version
+    user_prompt_version = args.user_prompt_version or prompt_version
+    prompt_bundle = load_sts2_mcp_action_prompts(
+        system_version=system_prompt_version,
+        user_version=user_prompt_version,
+    )
+    system_prompt = render_system_prompt(prompt_bundle, game_context=GAME_CONTEXT)
+    prompt_metadata = build_prompt_metadata(prompt_bundle, system_prompt)
 
     action_history: list[str] = []
     consecutive_errors = 0
@@ -1373,6 +1362,12 @@ async def run_async(args: argparse.Namespace) -> int:
             tools = await discover_tools(session)
             print(f"Loaded {len(tools)} MCP action tools.", flush=True)
             print(f"Using LLM ({getattr(args, 'llm_source', 'custom')}): {args.model} at {args.llm_url}", flush=True)
+            print(
+                "Using prompts: "
+                f"system={system_prompt_version} ({prompt_bundle.system.sha256[:12]}), "
+                f"user={user_prompt_version} ({prompt_bundle.user.sha256[:12]})",
+                flush=True,
+            )
 
             for step in range(1, args.steps + 1):
                 raw_text: str | None = None
@@ -1383,13 +1378,22 @@ async def run_async(args: argparse.Namespace) -> int:
                 try:
                     state = await mcp_get_state(session)
                     legal_actions = build_legal_actions(state, tools)
-                    user_prompt = build_user_prompt(state, step, args.max_state_chars, action_history, legal_actions)
+                    user_prompt = build_user_prompt(
+                        state,
+                        step,
+                        args.max_state_chars,
+                        action_history,
+                        legal_actions,
+                        prompt_bundle,
+                    )
                     action, action_args, rationale, parsed, raw_text, raw_response, model_trace = choose_model_action(
                         args,
                         state,
                         tools,
                         legal_actions,
                         user_prompt,
+                        system_prompt,
+                        prompt_metadata,
                     )
                     print_step(step, state, action, action_args, rationale)
 
@@ -1477,6 +1481,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-consecutive-errors", type=int, default=3)
     parser.add_argument("--repair-attempts", type=int, default=2, help="Ask the model to fix invalid action JSON this many times before skipping the step.")
     parser.add_argument("--log-dir", default="logs")
+    parser.add_argument(
+        "--prompt-version",
+        default=os.environ.get("STS2_PROMPT_VERSION", "v1"),
+        help="Default version for the MCP action system and user prompt templates.",
+    )
+    parser.add_argument(
+        "--system-prompt-version",
+        default=os.environ.get("STS2_SYSTEM_PROMPT_VERSION"),
+        help="Override the MCP action system prompt template version.",
+    )
+    parser.add_argument(
+        "--user-prompt-version",
+        default=os.environ.get("STS2_USER_PROMPT_VERSION"),
+        help="Override the MCP action user prompt template version.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Do not send actions to the game.")
     parser.add_argument("--show-results", action="store_true", help="Print raw action results.")
     parser.add_argument("--sts2-host", default=os.environ.get("STS2_HOST", "localhost"))

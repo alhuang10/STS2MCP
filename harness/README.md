@@ -102,6 +102,24 @@ actions. Each step builds a `valid_actions` list where every item has an
 The harness resolves `action_id` back to the attached MCP tool and args. This
 avoids asking the model to invent indices, targets, or required tool arguments.
 
+Prompt text for the MCP harness lives under `harness/prompts/` and is loaded by
+version. The default is `v1` for both the system and user prompt templates.
+Override both together:
+
+```bash
+.local/mcp-venv/bin/python harness/mcp_sts2_harness.py --prompt-version v1
+```
+
+Or override them independently:
+
+```bash
+STS2_SYSTEM_PROMPT_VERSION=v1 STS2_USER_PROMPT_VERSION=v1 \
+  .local/mcp-venv/bin/python harness/mcp_sts2_harness.py
+```
+
+Trace records include prompt template versions and SHA-256 hashes so training
+datasets and evaluation runs can be tied back to the exact prompt source.
+
 The harness also logs a `model_trace` block for each step, including the exact
 chat messages sent to the model, the valid actions shown, raw model output,
 parsed action JSON, validation result, tool result, and token usage.
