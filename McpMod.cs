@@ -133,6 +133,9 @@ public static partial class McpMod
             catch (Exception ex) { GD.PrintErr($"[STS2 MCP] Main thread action error: {ex}"); }
             processed++;
         }
+
+        try { ProcessAnnotationUi(); }
+        catch (Exception ex) { GD.PrintErr($"[STS2 MCP] Annotation UI error: {ex}"); }
     }
 
     internal static Task<T> RunOnMainThread<T>(Func<T> func)

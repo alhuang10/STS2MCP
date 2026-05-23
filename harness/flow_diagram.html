@@ -1,0 +1,740 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>STS2 Local Model Harness Flow</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8fb;
+      --panel: #ffffff;
+      --ink: #172033;
+      --muted: #627087;
+      --line: #ccd5e3;
+      --blue: #2364aa;
+      --green: #2f855a;
+      --orange: #b85c00;
+      --red: #b42318;
+      --purple: #6956b8;
+      --shadow: 0 14px 35px rgba(24, 35, 55, 0.08);
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.5;
+    }
+
+    main {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 32px 24px 64px;
+    }
+
+    h1,
+    h2,
+    h3 {
+      margin: 0;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      font-size: 32px;
+      margin-bottom: 10px;
+    }
+
+    h2 {
+      font-size: 22px;
+      margin-bottom: 14px;
+    }
+
+    h3 {
+      font-size: 15px;
+      margin-bottom: 8px;
+    }
+
+    p {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    code,
+    pre {
+      font-family: var(--mono);
+    }
+
+    .lede {
+      max-width: 860px;
+      font-size: 16px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 24px;
+    }
+
+    .badge-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+
+    .badge {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--muted);
+      border-radius: 999px;
+      padding: 5px 9px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    section {
+      margin-top: 22px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 20px;
+    }
+
+    .map-wrap {
+      overflow-x: auto;
+      padding-bottom: 4px;
+    }
+
+    svg {
+      display: block;
+      width: 1180px;
+      height: 590px;
+    }
+
+    .node {
+      fill: #fff;
+      stroke: #b8c5d8;
+      stroke-width: 1.2;
+      rx: 8;
+    }
+
+    .node.user {
+      stroke: var(--blue);
+    }
+
+    .node.harness {
+      stroke: var(--green);
+    }
+
+    .node.model {
+      stroke: var(--purple);
+    }
+
+    .node.game {
+      stroke: var(--orange);
+    }
+
+    .node.log {
+      stroke: #8a96a8;
+    }
+
+    .title {
+      fill: var(--ink);
+      font-size: 15px;
+      font-weight: 700;
+    }
+
+    .sub {
+      fill: var(--muted);
+      font-size: 12px;
+    }
+
+    .arrow {
+      fill: none;
+      stroke: #58677c;
+      stroke-width: 1.5;
+      marker-end: url(#arrow);
+    }
+
+    .arrow.blue {
+      stroke: var(--blue);
+    }
+
+    .arrow.green {
+      stroke: var(--green);
+    }
+
+    .arrow.orange {
+      stroke: var(--orange);
+    }
+
+    .arrow.purple {
+      stroke: var(--purple);
+    }
+
+    .arrow.gray {
+      stroke: #738096;
+    }
+
+    .label {
+      fill: #334155;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .pill {
+      fill: #f2f6fb;
+      stroke: #ccd5e3;
+      stroke-width: 1;
+      rx: 6;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 14px;
+    }
+
+    .card strong {
+      display: block;
+      color: var(--ink);
+      font-size: 14px;
+      margin-bottom: 4px;
+    }
+
+    .card span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .flow-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    .flow-table th,
+    .flow-table td {
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid var(--line);
+      padding: 11px 10px;
+    }
+
+    .flow-table th {
+      color: var(--ink);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0;
+      background: #f3f6fa;
+    }
+
+    .flow-table tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 2px 7px;
+      font-size: 11px;
+      font-weight: 700;
+      color: #fff;
+      white-space: nowrap;
+    }
+
+    .tag.harness {
+      background: var(--green);
+    }
+
+    .tag.model {
+      background: var(--purple);
+    }
+
+    .tag.mcp {
+      background: var(--blue);
+    }
+
+    .tag.game {
+      background: var(--orange);
+    }
+
+    .tag.log {
+      background: #64748b;
+    }
+
+    .io-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+
+    .snippet {
+      margin: 0;
+      background: #101828;
+      color: #d8e2f0;
+      border-radius: 8px;
+      padding: 14px;
+      font-size: 12px;
+      overflow-x: auto;
+      min-height: 150px;
+    }
+
+    .snippet .comment {
+      color: #8fb2d8;
+    }
+
+    .callout {
+      border-left: 4px solid var(--blue);
+      background: #eef6ff;
+      padding: 12px 14px;
+      border-radius: 6px;
+      color: #26384f;
+      font-size: 14px;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 14px;
+    }
+
+    .list {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .list li {
+      margin: 6px 0;
+    }
+
+    @media (max-width: 900px) {
+      main {
+        padding: 24px 14px 48px;
+      }
+
+      .topbar,
+      .two-col,
+      .io-grid,
+      .grid {
+        grid-template-columns: 1fr;
+        display: grid;
+      }
+
+      .badge-row {
+        justify-content: flex-start;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="topbar">
+      <div>
+        <h1>STS2 Local Model Harness Flow</h1>
+        <p class="lede">A concrete map of what talks to what, what the Qwen model sees, and where legality, strategy, and logging happen in the current local setup.</p>
+      </div>
+      <div class="badge-row" aria-label="current defaults">
+        <span class="badge">Model: qwen3.5-9b</span>
+        <span class="badge">LLM API: 127.0.0.1:8080/v1</span>
+        <span class="badge">Game API: localhost:15526</span>
+        <span class="badge">MCP transport: stdio</span>
+      </div>
+    </div>
+
+    <section class="panel">
+      <h2>System Map</h2>
+      <div class="map-wrap" role="img" aria-label="Data flow diagram between terminal, harness, llama-server, MCP server, game mod, and game process">
+        <svg viewBox="0 0 1180 590" aria-hidden="true">
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#58677c"></path>
+            </marker>
+          </defs>
+
+          <rect class="node user" x="35" y="55" width="210" height="90"></rect>
+          <text class="title" x="55" y="86">User Terminal</text>
+          <text class="sub" x="55" y="110">starts llama-server</text>
+          <text class="sub" x="55" y="130">starts MCP harness</text>
+
+          <rect class="node harness" x="330" y="45" width="250" height="115"></rect>
+          <text class="title" x="350" y="78">mcp_sts2_harness.py</text>
+          <text class="sub" x="350" y="102">owns the loop</text>
+          <text class="sub" x="350" y="122">filters allowed tools</text>
+          <text class="sub" x="350" y="142">validates model action JSON</text>
+
+          <rect class="node model" x="720" y="45" width="250" height="115"></rect>
+          <text class="title" x="740" y="78">llama-server</text>
+          <text class="sub" x="740" y="102">OpenAI-compatible chat API</text>
+          <text class="sub" x="740" y="122">loads Qwen GGUF</text>
+          <text class="sub" x="740" y="142">returns one JSON action</text>
+
+          <rect class="node mcp" x="330" y="245" width="250" height="110"></rect>
+          <text class="title" x="350" y="278">mcp/server.py</text>
+          <text class="sub" x="350" y="302">MCP tool wrapper</text>
+          <text class="sub" x="350" y="322">maps tool calls to REST bodies</text>
+          <text class="sub" x="350" y="342">runs as harness subprocess</text>
+
+          <rect class="node game" x="720" y="245" width="250" height="110"></rect>
+          <text class="title" x="740" y="278">STS2_MCP Mod HTTP API</text>
+          <text class="sub" x="740" y="302">GET /api/v1/singleplayer</text>
+          <text class="sub" x="740" y="322">POST /api/v1/singleplayer</text>
+          <text class="sub" x="740" y="342">localhost:15526</text>
+
+          <rect class="node game" x="720" y="435" width="250" height="95"></rect>
+          <text class="title" x="740" y="468">Slay the Spire 2</text>
+          <text class="sub" x="740" y="492">actual game process</text>
+          <text class="sub" x="740" y="512">visible UI and run state</text>
+
+          <rect class="node log" x="330" y="440" width="250" height="90"></rect>
+          <text class="title" x="350" y="472">logs/*.jsonl</text>
+          <text class="sub" x="350" y="496">state, raw model text, parsed action</text>
+          <text class="sub" x="350" y="516">tool result, token usage</text>
+
+          <rect class="pill" x="70" y="190" width="135" height="36"></rect>
+          <text class="label" x="90" y="213">two shell commands</text>
+
+          <rect class="pill" x="625" y="80" width="62" height="34"></rect>
+          <text class="label" x="638" y="101">HTTP</text>
+
+          <rect class="pill" x="415" y="190" width="82" height="34"></rect>
+          <text class="label" x="438" y="211">stdio</text>
+
+          <rect class="pill" x="625" y="280" width="62" height="34"></rect>
+          <text class="label" x="638" y="301">HTTP</text>
+
+          <path class="arrow blue" d="M 245 100 C 270 100, 292 100, 330 100"></path>
+          <text class="label" x="260" y="88">run harness</text>
+
+          <path class="arrow purple" d="M 580 100 C 620 100, 660 100, 720 100"></path>
+          <text class="label" x="608" y="75">chat/completions</text>
+
+          <path class="arrow purple" d="M 720 130 C 660 165, 620 165, 580 130"></path>
+          <text class="label" x="615" y="166">raw JSON text</text>
+
+          <path class="arrow green" d="M 455 160 C 455 190, 455 215, 455 245"></path>
+          <text class="label" x="468" y="210">tool calls</text>
+
+          <path class="arrow orange" d="M 580 300 C 620 300, 660 300, 720 300"></path>
+          <text class="label" x="604" y="288">GET state / POST action</text>
+
+          <path class="arrow orange" d="M 845 355 C 845 385, 845 405, 845 435"></path>
+          <text class="label" x="858" y="400">reads and clicks UI</text>
+
+          <path class="arrow orange" d="M 970 482 C 1040 425, 1040 300, 970 300"></path>
+          <text class="label" x="988" y="394">state changes</text>
+
+          <path class="arrow gray" d="M 455 355 C 455 390, 455 408, 455 440"></path>
+          <text class="label" x="468" y="402">append trace</text>
+
+          <path class="arrow green" d="M 330 300 C 270 255, 270 145, 330 125"></path>
+          <text class="label" x="252" y="220">state result</text>
+        </svg>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="card">
+        <strong>Harness is the orchestrator</strong>
+        <span>It fetches state, filters current-state tools, builds the model prompt, validates the chosen JSON, calls one tool, logs the result, then repeats.</span>
+      </div>
+      <div class="card">
+        <strong>MCP is the typed tool boundary</strong>
+        <span>It exposes schemas and tool names, then converts calls like <code>rewards_claim(reward_index)</code> into STS2_MCP REST actions.</span>
+      </div>
+      <div class="card">
+        <strong>llama-server only predicts</strong>
+        <span>It does not see the game directly and it does not call tools. It receives text messages and returns text, ideally one JSON object.</span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>One Harness Step</h2>
+      <table class="flow-table">
+        <thead>
+          <tr>
+            <th>Order</th>
+            <th>Sender</th>
+            <th>Receiver</th>
+            <th>Payload</th>
+            <th>Important Detail</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td><span class="tag harness">Harness</span></td>
+            <td><span class="tag mcp">MCP server</span></td>
+            <td><code>list_tools()</code> once at startup</td>
+            <td>Harness discovers global MCP tool names, descriptions, and JSON schemas. Profile/wiki tools and multiplayer tools are filtered out.</td>
+          </tr>
+          <tr>
+            <td>2</td>
+            <td><span class="tag harness">Harness</span></td>
+            <td><span class="tag mcp">MCP server</span></td>
+            <td><code>get_game_state({"format":"json"})</code></td>
+            <td>MCP maps this to <code>GET http://localhost:15526/api/v1/singleplayer?format=json</code>.</td>
+          </tr>
+          <tr>
+            <td>3</td>
+            <td><span class="tag game">STS2_MCP mod</span></td>
+            <td><span class="tag harness">Harness</span></td>
+            <td>Full state JSON</td>
+            <td>Includes <code>state_type</code>, player data, visible cards, enemies, rewards, options, indices, and flags like <code>can_play</code>.</td>
+          </tr>
+          <tr>
+            <td>4</td>
+            <td><span class="tag harness">Harness</span></td>
+            <td><span class="tag harness">Harness</span></td>
+            <td><code>tools_for_state(state, tools)</code></td>
+            <td>Global MCP tools become a current-state menu. Example: <code>rewards</code> shows <code>rewards_claim</code>, while <code>card_reward</code> shows <code>rewards_pick_card</code>.</td>
+          </tr>
+          <tr>
+            <td>5</td>
+            <td><span class="tag harness">Harness</span></td>
+            <td><span class="tag model">llama-server</span></td>
+            <td>OpenAI chat completion request</td>
+            <td>Messages include the system prompt, high-level strategy, current-state action menu, recent action history, and compacted current state JSON.</td>
+          </tr>
+          <tr>
+            <td>6</td>
+            <td><span class="tag model">llama-server</span></td>
+            <td><span class="tag harness">Harness</span></td>
+            <td>Raw model text</td>
+            <td>Expected shape is exactly <code>{"action":"...","args":{...},"rationale":"..."}</code>. The harness extracts and parses this JSON.</td>
+          </tr>
+          <tr>
+            <td>7</td>
+            <td><span class="tag harness">Harness</span></td>
+            <td><span class="tag harness">Harness</span></td>
+            <td>Validation and optional repair prompt</td>
+            <td>Rejects missing args, wrong state tools, unplayable cards, bad targets, invalid indices, and illegal reward screen transitions.</td>
+          </tr>
+          <tr>
+            <td>8</td>
+            <td><span class="tag harness">Harness</span></td>
+            <td><span class="tag mcp">MCP server</span></td>
+            <td>One tool call, for example <code>rewards_claim({"reward_index":0})</code></td>
+            <td>MCP maps the typed tool call into the mod's REST action body.</td>
+          </tr>
+          <tr>
+            <td>9</td>
+            <td><span class="tag mcp">MCP server</span></td>
+            <td><span class="tag game">STS2_MCP mod</span></td>
+            <td><code>POST /api/v1/singleplayer</code></td>
+            <td>Example body: <code>{"action":"claim_reward","index":0}</code>.</td>
+          </tr>
+          <tr>
+            <td>10</td>
+            <td><span class="tag harness">Harness</span></td>
+            <td><span class="tag log">JSONL log</span></td>
+            <td>Trace record</td>
+            <td>Logs state, model text, parsed JSON, tool result, and LLM usage. This is the best place to debug model behavior.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2>What The Model Sees</h2>
+      <div class="io-grid">
+        <div>
+          <h3>System Message</h3>
+          <pre class="snippet"><span class="comment">// Built once per model call from SYSTEM_PROMPT.</span>
+You are playing Slay the Spire 2 through MCP tools.
+
+Game context:
+- Slay the Spire is a roguelike deckbuilder...
+- Each turn you draw a hand and spend energy...
+- Deckbuilding goal: make a small, reliable deck...
+
+Return exactly one JSON object and no prose:
+{"action":"TOOL_NAME","args":{},"rationale":"short public reason"}
+
+Rules:
+- Choose exactly one action per response.
+- Only play cards whose hand entry has can_play=true.
+- On rewards, use rewards_claim first.
+- Do not request get_game_state.</pre>
+        </div>
+        <div>
+          <h3>User Message</h3>
+          <pre class="snippet"><span class="comment">// Rebuilt every step.</span>
+Step: 12
+
+Available actions for the current state:
+- rewards_claim(reward_index:integer):
+  Claim a reward...
+  State hint: valid reward_index values: 0:card
+- wait: Do nothing briefly...
+- stop: Stop the harness cleanly.
+
+Recent action history:
+11. monster: combat_end_turn {} -> ok
+
+Current game state JSON:
+{"state_type":"rewards","rewards":{"items":[...]},...}
+
+Pick the next single action now.</pre>
+        </div>
+      </div>
+      <p class="callout" style="margin-top:14px;">The model does not see hidden game state, the screen image, or the full prior transcript. It sees the current JSON state, a short history window, and the current-state tool menu that the harness built.</p>
+    </section>
+
+    <section class="panel">
+      <h2>Expected Model Output</h2>
+      <div class="two-col">
+        <div>
+          <pre class="snippet">{
+  "action": "combat_play_card",
+  "args": {
+    "card_index": 2,
+    "target": "NIBBIT_0"
+  },
+  "rationale": "Use playable damage on the low HP attacker."
+}</pre>
+        </div>
+        <div>
+          <ul class="list">
+            <li><code>action</code> must be a current-state MCP tool name, or local <code>wait</code> / <code>stop</code>.</li>
+            <li>All tool parameters must live under <code>args</code>.</li>
+            <li>Targets use exact enemy <code>entity_id</code> strings from game state.</li>
+            <li>The harness asks for repair if JSON is malformed or illegal.</li>
+            <li>Reasoning is off by default in llama-server, so hidden chain-of-thought is not shown.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Current-State Tool Mapping</h2>
+      <table class="flow-table">
+        <thead>
+          <tr>
+            <th>State Type</th>
+            <th>Tools Shown To Model</th>
+            <th>Dynamic Hints</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>menu</code>, <code>game_over</code></td>
+            <td><code>menu_select</code></td>
+            <td>Visible option names such as <code>singleplayer</code>, <code>confirm</code>, <code>main_menu</code>.</td>
+          </tr>
+          <tr>
+            <td><code>monster</code>, <code>elite</code>, <code>boss</code></td>
+            <td><code>combat_play_card</code>, <code>combat_end_turn</code></td>
+            <td>Playable hand indices, card names, enemy target ids, <code>can_play</code> flags.</td>
+          </tr>
+          <tr>
+            <td><code>rewards</code></td>
+            <td><code>rewards_claim</code>, or <code>proceed_to_map</code> only after no items remain</td>
+            <td>Reward indices and reward types.</td>
+          </tr>
+          <tr>
+            <td><code>card_reward</code></td>
+            <td><code>rewards_pick_card</code>, optional <code>rewards_skip_card</code></td>
+            <td>Offered card indices, names, and skip availability.</td>
+          </tr>
+          <tr>
+            <td><code>map</code></td>
+            <td><code>map_choose_node</code></td>
+            <td>Next node indices and node types.</td>
+          </tr>
+          <tr>
+            <td><code>event</code></td>
+            <td><code>event_advance_dialogue</code> during dialogue, otherwise <code>event_choose_option</code></td>
+            <td>Unlocked option indices, titles, and descriptions.</td>
+          </tr>
+          <tr>
+            <td><code>rest_site</code>, <code>shop</code>, <code>treasure</code></td>
+            <td>Screen action plus <code>proceed_to_map</code> when allowed</td>
+            <td>Enabled rest options, affordable shop items, treasure relic indices.</td>
+          </tr>
+          <tr>
+            <td><code>card_select</code>, <code>bundle_select</code>, <code>relic_select</code></td>
+            <td>Selection tools plus confirm/cancel/skip when state flags allow them</td>
+            <td>Selectable indices and confirmation flags.</td>
+          </tr>
+          <tr>
+            <td><code>crystal_sphere</code></td>
+            <td><code>crystal_sphere_set_tool</code>, <code>crystal_sphere_click_cell</code>, <code>crystal_sphere_proceed</code></td>
+            <td>Available tool sizes, clickable cells, and proceed flag.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2>Where To Improve</h2>
+      <div class="grid">
+        <div class="card">
+          <strong>State affordances</strong>
+          <span>Move the current-state action mapping into STS2_MCP itself as an <code>allowed_actions</code> field, so every client gets the same legal menu.</span>
+        </div>
+        <div class="card">
+          <strong>Decision quality</strong>
+          <span>Add a small policy layer that scores card rewards, map nodes, potion use, and lethal/block choices before asking the model.</span>
+        </div>
+        <div class="card">
+          <strong>Memory</strong>
+          <span>Persist run-level notes such as deck plan, boss, relic synergies, path risk, and failed actions instead of relying only on recent history.</span>
+        </div>
+        <div class="card">
+          <strong>Observability</strong>
+          <span>Build a log viewer over <code>logs/*.jsonl</code> so you can inspect state, prompt, raw model output, validation errors, and tool result step by step.</span>
+        </div>
+        <div class="card">
+          <strong>Recovery</strong>
+          <span>Track repeated invalid choices and temporarily mask actions or indices that just failed for the unchanged state.</span>
+        </div>
+        <div class="card">
+          <strong>Prompt size</strong>
+          <span>Summarize stable run data and show only screen-relevant slices of state to fit longer runs into the local context window.</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Run Commands</h2>
+      <div class="io-grid">
+        <pre class="snippet"># Terminal 1: model server
+cd /Users/alhuang/Repos/STS2MCP
+./harness/start_llama_server.sh</pre>
+        <pre class="snippet"># Terminal 2: MCP harness
+cd /Users/alhuang/Repos/STS2MCP
+.local/mcp-venv/bin/python harness/mcp_sts2_harness.py \
+  --steps 300 \
+  --sleep 0.05 \
+  --show-results</pre>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
