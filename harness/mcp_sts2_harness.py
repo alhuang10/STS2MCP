@@ -68,6 +68,16 @@ LOCAL_ACTIONS = {
 }
 
 COMBAT_STATE_TYPES = {"monster", "elite", "boss"}
+TRANSIENT_STATE_TYPES = {"unknown"}
+TRANSITION_SETTLE_ACTIONS = {
+    "map_choose_node",
+    "proceed_to_map",
+    "crystal_sphere_proceed",
+}
+DEFAULT_HARNESS_STEPS = 300
+DEFAULT_SEEDED_EVAL_STEPS = 10000
+SEEDED_EVAL_CHARACTER = "IRONCLAD"
+SEEDED_EVAL_SEED = "CW967RN0QC"
 
 
 @dataclass(frozen=True)
@@ -911,6 +921,222 @@ async def mcp_call_action(session: ClientSession, tools: dict[str, ToolSpec], ac
     return parse_tool_json(result)
 
 
+async def mcp_call_setup_tool(session: ClientSession, tool_name: str, args: Json) -> Any:
+    result = parse_tool_json(await session.call_tool(tool_name, args))
+    if isinstance(result, dict) and result.get("status") == "error":
+        raise RuntimeError(f"{tool_name} failed: {result.get('error')}")
+    return result
+
+
+def compact_state_summary(state: Json | None) -> Json | None:
+    if not isinstance(state, dict):
+        return None
+    player = safe_dict(state.get("player"))
+    run = safe_dict(state.get("run"))
+    summary: Json = {
+        "state_type": state.get("state_type"),
+        "menu_screen": state.get("menu_screen"),
+        "run": run or None,
+    }
+    if player:
+        summary["player"] = {
+            "character": player.get("character"),
+            "hp": player.get("hp"),
+            "max_hp": player.get("max_hp"),
+            "gold": player.get("gold"),
+            "relic_count": len(safe_list(player.get("relics"))),
+            "potion_count": len(safe_list(player.get("potions"))),
+            "deck_count": len(safe_list(player.get("deck"))),
+        }
+    if state.get("state_type") in COMBAT_STATE_TYPES:
+        battle = safe_dict(state.get("battle"))
+        summary["battle"] = {
+            "room_type": state.get("state_type"),
+            "turn": battle.get("turn"),
+            "enemies": [
+                {
+                    "name": enemy.get("name"),
+                    "entity_id": enemy.get("entity_id"),
+                    "hp": enemy.get("hp"),
+                    "max_hp": enemy.get("max_hp"),
+                }
+                for enemy in safe_list(battle.get("enemies"))
+                if isinstance(enemy, dict)
+            ],
+        }
+    if state.get("state_type") == "event":
+        event = safe_dict(state.get("event"))
+        summary["event"] = {
+            "event_id": event.get("event_id"),
+            "event_name": event.get("event_name"),
+            "in_dialogue": event.get("in_dialogue"),
+        }
+    if state.get("state_type") == "map":
+        game_map = safe_dict(state.get("map"))
+        summary["map"] = {
+            "current_position": game_map.get("current_position"),
+            "next_option_count": len(safe_list(game_map.get("next_options"))),
+            "boss": game_map.get("boss"),
+            "bosses": game_map.get("bosses"),
+        }
+    if state.get("state_type") == "game_over":
+        summary["game_over"] = safe_dict(state.get("game_over"))
+    return summary
+
+
+def eval_outcome(stop_reason: str, final_state: Json | None) -> str:
+    if isinstance(final_state, dict) and final_state.get("state_type") == "game_over":
+        return "game_over"
+    if stop_reason == "step_limit":
+        return "step_limit"
+    return stop_reason
+
+
+def result_is_ok(result: Any) -> bool:
+    return isinstance(result, dict) and result.get("status") == "ok"
+
+
+def state_progress_signature(state: Json | None) -> str:
+    return json.dumps(compact_state_summary(state) or {}, ensure_ascii=False, sort_keys=True)
+
+
+def write_eval_summary(
+    summary_path: Path,
+    *,
+    args: argparse.Namespace,
+    log_path: Path,
+    started_at: dt.datetime,
+    ended_at: dt.datetime,
+    steps_taken: int,
+    stop_reason: str,
+    setup: Json | None,
+    final_state: Json | None,
+    error: str | None = None,
+) -> None:
+    summary: Json = {
+        "kind": "sts2_seeded_eval",
+        "character": SEEDED_EVAL_CHARACTER,
+        "seed": SEEDED_EVAL_SEED,
+        "max_steps": args.steps,
+        "steps_taken": steps_taken,
+        "outcome": eval_outcome(stop_reason, final_state),
+        "stop_reason": stop_reason,
+        "started_at": started_at.isoformat(),
+        "ended_at": ended_at.isoformat(),
+        "duration_seconds": round((ended_at - started_at).total_seconds(), 3),
+        "log_path": str(log_path),
+        "model": args.model,
+        "llm_url": args.llm_url,
+        "llm_source": getattr(args, "llm_source", "custom"),
+        "setup": setup,
+        "final_state": compact_state_summary(final_state),
+    }
+    if error:
+        summary["error"] = error
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+async def wait_for_non_menu_state(session: ClientSession, timeout: float, sleep_seconds: float) -> Json:
+    deadline = time.monotonic() + timeout
+    last_state: Json = {}
+    while time.monotonic() < deadline:
+        last_state = await mcp_get_state(session)
+        if last_state.get("state_type") != "menu" and last_state.get("state_type") not in TRANSIENT_STATE_TYPES:
+            return last_state
+        time.sleep(sleep_seconds)
+    raise RuntimeError(
+        "timed out waiting for eval run to leave menu/setup transition after eval_start_run; "
+        f"last state: {compact_state_summary(last_state)}"
+    )
+
+
+async def settle_after_transition_action(
+    session: ClientSession,
+    previous_state: Json,
+    timeout: float,
+    sleep_seconds: float,
+) -> Json | None:
+    previous_signature = state_progress_signature(previous_state)
+    deadline = time.monotonic() + timeout
+    last_state: Json | None = None
+    while time.monotonic() < deadline:
+        time.sleep(sleep_seconds)
+        last_state = await mcp_get_state(session)
+        state_type = last_state.get("state_type")
+        if state_type in TRANSIENT_STATE_TYPES:
+            continue
+        if state_progress_signature(last_state) != previous_signature:
+            return last_state
+    return last_state
+
+
+async def start_seeded_eval_run(session: ClientSession, args: argparse.Namespace, log_path: Path) -> Json:
+    setup: Json = {
+        "character": SEEDED_EVAL_CHARACTER,
+        "seed": SEEDED_EVAL_SEED,
+        "events": [],
+    }
+
+    def record(event: str, state: Json | None = None, result: Any = None) -> None:
+        entry: Json = {"event": event}
+        if state is not None:
+            entry["state"] = compact_state_summary(state)
+        if result is not None:
+            entry["result"] = result
+        setup["events"].append(entry)
+        log_event(
+            log_path,
+            {
+                "phase": "eval_setup",
+                "event": event,
+                "state": state,
+                "result": result,
+                "character": SEEDED_EVAL_CHARACTER,
+                "seed": SEEDED_EVAL_SEED,
+            },
+        )
+
+    state = await mcp_get_state(session)
+    record("initial_state", state=state)
+    if state.get("state_type") != "menu":
+        raise RuntimeError(
+            "seeded eval setup requires the game to be at the main menu, singleplayer menu, "
+            f"or standard character-select screen; current state is {state.get('state_type')!r}."
+        )
+
+    menu_screen = state.get("menu_screen")
+    if menu_screen == "main":
+        result = await mcp_call_setup_tool(session, "menu_select", {"option": "singleplayer"})
+        record("menu_select_singleplayer", result=result)
+        time.sleep(args.eval_setup_sleep)
+        state = await mcp_get_state(session)
+        record("after_singleplayer", state=state)
+        menu_screen = state.get("menu_screen")
+
+    if menu_screen == "singleplayer":
+        result = await mcp_call_setup_tool(session, "menu_select", {"option": "standard"})
+        record("menu_select_standard", result=result)
+        time.sleep(args.eval_setup_sleep)
+        state = await mcp_get_state(session)
+        record("after_standard", state=state)
+        menu_screen = state.get("menu_screen")
+
+    if menu_screen != "character_select":
+        raise RuntimeError(f"seeded eval setup expected character_select, got menu_screen={menu_screen!r}.")
+
+    result = await mcp_call_setup_tool(
+        session,
+        "eval_start_run",
+        {"character": SEEDED_EVAL_CHARACTER, "seed": SEEDED_EVAL_SEED},
+    )
+    record("eval_start_run", result=result)
+    final_state = await wait_for_non_menu_state(session, args.eval_setup_timeout, args.eval_setup_sleep)
+    record("run_started", state=final_state)
+    setup["started_state"] = compact_state_summary(final_state)
+    return setup
+
+
 def normalize_mcp_action(raw: Json, tools: dict[str, ToolSpec]) -> tuple[str, Json, str]:
     action, args, rationale = normalize_action_against_tools(raw, tools)
     action = ALIASES.get(action, action)
@@ -1342,7 +1568,13 @@ async def run_async(args: argparse.Namespace) -> int:
     log_dir = Path(args.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    log_path = log_dir / f"mcp-sts2-harness-{stamp}.jsonl"
+    log_prefix = "mcp-sts2-seeded-eval" if args.seeded_eval else "mcp-sts2-harness"
+    log_path = log_dir / f"{log_prefix}-{stamp}.jsonl"
+    summary_path = (
+        Path(args.eval_summary_path)
+        if args.eval_summary_path
+        else log_dir / f"{log_prefix}-{stamp}.summary.json"
+    )
     prompt_version = args.prompt_version
     system_prompt_version = args.system_prompt_version or prompt_version
     user_prompt_version = args.user_prompt_version or prompt_version
@@ -1356,6 +1588,13 @@ async def run_async(args: argparse.Namespace) -> int:
     action_history: list[str] = []
     consecutive_errors = 0
     server_params = make_server_params(args)
+    started_at = dt.datetime.now()
+    setup_summary: Json | None = None
+    final_state: Json | None = None
+    final_error: str | None = None
+    stop_reason = "step_limit"
+    last_step = 0
+    exit_code = 0
 
     async with stdio_client(server_params) as (read, write):
         async with ClientSession(read, write) as session:
@@ -1369,8 +1608,40 @@ async def run_async(args: argparse.Namespace) -> int:
                 f"user={user_prompt_version} ({prompt_bundle.user.sha256[:12]})",
                 flush=True,
             )
+            if args.seeded_eval:
+                print(
+                    "Seeded eval: "
+                    f"character={SEEDED_EVAL_CHARACTER}, seed={SEEDED_EVAL_SEED}, max_steps={args.steps}",
+                    flush=True,
+                )
+                try:
+                    setup_summary = await start_seeded_eval_run(session, args, log_path)
+                except (urllib.error.URLError, TimeoutError, RuntimeError, ValueError) as exc:
+                    stop_reason = "setup_error"
+                    final_error = repr(exc)
+                    print(f"Seeded eval setup failed: {exc}", file=sys.stderr, flush=True)
+                    try:
+                        final_state = await mcp_get_state(session)
+                    except Exception:
+                        final_state = None
+                    write_eval_summary(
+                        summary_path,
+                        args=args,
+                        log_path=log_path,
+                        started_at=started_at,
+                        ended_at=dt.datetime.now(),
+                        steps_taken=last_step,
+                        stop_reason=stop_reason,
+                        setup=setup_summary,
+                        final_state=final_state,
+                        error=final_error,
+                    )
+                    print(f"Eval summary: {summary_path}", flush=True)
+                    print(f"Log: {log_path}", flush=True)
+                    return 1
 
             for step in range(1, args.steps + 1):
+                last_step = step
                 raw_text: str | None = None
                 parsed: Json | None = None
                 raw_response: Json = {}
@@ -1378,6 +1649,7 @@ async def run_async(args: argparse.Namespace) -> int:
                 model_trace: Json | None = None
                 try:
                     state = await mcp_get_state(session)
+                    final_state = state
                     legal_actions = build_legal_actions(state, tools)
                     user_prompt = build_user_prompt(
                         state,
@@ -1400,6 +1672,7 @@ async def run_async(args: argparse.Namespace) -> int:
 
                     if action == "stop":
                         result: Any = {"status": "stopped"}
+                        stop_reason = "model_stop"
                         log_event(
                             log_path,
                             {
@@ -1430,6 +1703,25 @@ async def run_async(args: argparse.Namespace) -> int:
                         },
                     )
 
+                    if result_is_ok(result) and action in TRANSITION_SETTLE_ACTIONS:
+                        settled_state = await settle_after_transition_action(
+                            session,
+                            state,
+                            args.transition_settle_timeout,
+                            args.transition_settle_sleep,
+                        )
+                        if settled_state is not None:
+                            final_state = settled_state
+                            log_event(
+                                log_path,
+                                {
+                                    "step": step,
+                                    "phase": "post_action_settle",
+                                    "action": action,
+                                    "state": settled_state,
+                                },
+                            )
+
                     action_history.append(history_line(step, state, action, action_args, result))
                     if len(action_history) > args.history_turns:
                         action_history = action_history[-args.history_turns :]
@@ -1437,15 +1729,19 @@ async def run_async(args: argparse.Namespace) -> int:
                     if args.show_results:
                         print(compact_json(result, args.max_result_chars), flush=True)
                     if state.get("state_type") == "game_over":
+                        stop_reason = "game_over"
                         print("Reached game_over state.", flush=True)
                         break
                     consecutive_errors = 0
                     time.sleep(args.sleep)
                 except KeyboardInterrupt:
                     print("\nInterrupted.", flush=True)
-                    return 130
+                    stop_reason = "interrupted"
+                    exit_code = 130
+                    break
                 except (urllib.error.URLError, TimeoutError, RuntimeError, ValueError) as exc:
                     consecutive_errors += 1
+                    final_error = repr(exc)
                     print(f"[{step}] error: {exc}", file=sys.stderr, flush=True)
                     log_event(
                         log_path,
@@ -1459,18 +1755,48 @@ async def run_async(args: argparse.Namespace) -> int:
                         },
                     )
                     if consecutive_errors >= args.max_consecutive_errors:
+                        stop_reason = "error"
+                        exit_code = 1
                         print(f"Too many consecutive errors. Log: {log_path}", file=sys.stderr, flush=True)
-                        return 1
+                        break
                     time.sleep(args.sleep)
 
+            if args.seeded_eval:
+                try:
+                    final_state = await mcp_get_state(session)
+                except Exception as exc:
+                    if final_error is None:
+                        final_error = f"failed to fetch final state: {exc!r}"
+                write_eval_summary(
+                    summary_path,
+                    args=args,
+                    log_path=log_path,
+                    started_at=started_at,
+                    ended_at=dt.datetime.now(),
+                    steps_taken=last_step,
+                    stop_reason=stop_reason,
+                    setup=setup_summary,
+                    final_state=final_state,
+                    error=final_error,
+                )
+                print(f"Eval summary: {summary_path}", flush=True)
+
     print(f"Log: {log_path}", flush=True)
-    return 0
+    return exit_code
 
 
 def parse_args() -> argparse.Namespace:
     root = repo_root()
     parser = argparse.ArgumentParser(description="Let an OpenAI-compatible model play STS2 through MCP.")
-    parser.add_argument("--steps", type=int, default=300, help="Maximum number of model actions to take.")
+    parser.add_argument(
+        "--steps",
+        type=int,
+        default=None,
+        help=(
+            "Maximum number of model actions to take. Defaults to "
+            f"{DEFAULT_HARNESS_STEPS}, or {DEFAULT_SEEDED_EVAL_STEPS} with --seeded-eval."
+        ),
+    )
     parser.add_argument("--sleep", type=float, default=0.25, help="Seconds to wait after each step.")
     add_llm_arguments(parser)
     parser.add_argument("--temperature", type=float, default=0.2)
@@ -1499,6 +1825,42 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--dry-run", action="store_true", help="Do not send actions to the game.")
     parser.add_argument("--show-results", action="store_true", help="Print raw action results.")
+    parser.add_argument(
+        "--seeded-eval",
+        action="store_true",
+        help=(
+            "Start the hardcoded seeded eval run before the model loop "
+            f"({SEEDED_EVAL_CHARACTER} on {SEEDED_EVAL_SEED})."
+        ),
+    )
+    parser.add_argument(
+        "--eval-summary-path",
+        help="Optional output path for the seeded eval summary JSON.",
+    )
+    parser.add_argument(
+        "--eval-setup-timeout",
+        type=float,
+        default=20.0,
+        help="Seconds to wait for eval_start_run to leave character select.",
+    )
+    parser.add_argument(
+        "--eval-setup-sleep",
+        type=float,
+        default=0.5,
+        help="Seconds to wait between eval setup navigation actions.",
+    )
+    parser.add_argument(
+        "--transition-settle-timeout",
+        type=float,
+        default=3.0,
+        help="Seconds to poll for a changed state after transition actions like map_choose_node.",
+    )
+    parser.add_argument(
+        "--transition-settle-sleep",
+        type=float,
+        default=0.1,
+        help="Seconds between post-transition state polls.",
+    )
     parser.add_argument("--sts2-host", default=os.environ.get("STS2_HOST", "localhost"))
     parser.add_argument("--sts2-port", type=int, default=int(os.environ.get("STS2_PORT", "15526")))
     parser.add_argument(
@@ -1506,7 +1868,12 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("MCP_PYTHON", str(root / ".local/mcp-venv/bin/python")),
         help="Python executable with mcp and httpx installed.",
     )
-    return resolve_llm_args(parser.parse_args())
+    args = parser.parse_args()
+    if args.seeded_eval and args.dry_run:
+        parser.error("--seeded-eval cannot be combined with --dry-run because eval setup starts a real game run.")
+    if args.steps is None:
+        args.steps = DEFAULT_SEEDED_EVAL_STEPS if args.seeded_eval else DEFAULT_HARNESS_STEPS
+    return resolve_llm_args(args)
 
 
 def main() -> int:

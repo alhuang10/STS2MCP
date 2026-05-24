@@ -116,6 +116,28 @@ curl -s -X POST http://localhost:15526/api/v1/singleplayer \
 `eval_start_run` is excluded from the model-visible legal action menu and is
 intended only for harness-controlled benchmark setup.
 
+## Fixed Seed Eval Harness
+
+For a repeatable benchmark run, start STS2 at the main menu and run:
+
+```bash
+.local/mcp-venv/bin/python harness/mcp_sts2_harness.py \
+  --seeded-eval \
+  --runpod-id i6qkeo2utydx8c-64411136 \
+  --model Qwen3.6-27B \
+  --sleep 0.05
+```
+
+`--seeded-eval` currently hardcodes `IRONCLAD` on seed `CW967RN0QC`, launches
+that run through `eval_start_run`, and defaults to `--steps 10000`. It writes
+the normal JSONL trace plus a sibling `.summary.json` containing setup details,
+the configured seed/character, `steps_taken`, the stop reason, and a compact
+final-state summary.
+
+After transition actions such as `map_choose_node`, the harness briefly polls
+for a changed state so very low `--sleep` values do not read a stale map while
+the game is already loading the next room.
+
 ## Trace Viewer
 
 The MCP harness now asks the model to choose from fully-instantiated legal
