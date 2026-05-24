@@ -3,6 +3,8 @@ obj/
 out/
 .local/
 logs/
+data/
+wandb/
 
 # Python
 __pycache__/

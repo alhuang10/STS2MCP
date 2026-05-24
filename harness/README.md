@@ -135,3 +135,40 @@ Open `http://127.0.0.1:8765`.
 If reasoning is enabled and the model emits `<think>...</think>` blocks or a
 reasoning field in the chat response, the viewer shows that under the Reasoning
 tab. Older logs can still be loaded, but they will not include prompt messages.
+
+## SFT Dataset Conversion
+
+Convert in-game annotation captures into true chat-format JSONL:
+
+```bash
+/workspace/qwen36-venv/bin/python harness/convert_annotations_to_sft.py \
+  /workspace/annotations-20260523.jsonl \
+  -o data/sts2_sft_poc_20260523.jsonl \
+  --prompt-version v1
+```
+
+Each output row contains rendered `messages` plus metadata for the annotation
+source, selected action, prompt versions, and prompt hashes. The assistant
+message stores the human reasoning trace in `<think>...</think>` and keeps the
+final action JSON compact.
+
+## QLoRA Overfit POC
+
+Run a small W&B-tracked overfit test against the local Qwen3.6-27B model:
+
+```bash
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True WANDB_PROJECT=sts2mcp-qwen-lora \
+  /workspace/qwen36-venv/bin/python harness/train_qwen_lora_poc.py \
+    --dataset data/sts2_sft_poc_20260523.jsonl \
+    --model-dir /workspace/models/Qwen3.6-27B \
+    --output-dir /workspace/qwen36-sts2-lora-poc-20260523-4k \
+    --max-seq-length 4096 \
+    --too-long skip \
+    --max-steps 30 \
+    --learning-rate 5e-4 \
+    --wandb-project sts2mcp-qwen-lora \
+    --wandb-run-name qwen36-27b-sts2-overfit-poc-20260523-4k
+```
+
+Use `--dry-run-tokenize --no-wandb` first to inspect sequence lengths without
+loading the model.
