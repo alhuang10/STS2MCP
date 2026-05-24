@@ -210,6 +210,25 @@ async def menu_select(option: str, seed: str | None = None) -> str:
 
 
 @mcp.tool()
+async def eval_start_run(character: str = "IRONCLAD", seed: str = "CW967RN0QC") -> str:
+    """Start a deterministic singleplayer eval run from character select.
+
+    This is an eval-only setup helper. It expects the game to already be on the
+    standard singleplayer character-select screen. It selects the requested
+    character, applies the seed through the mod's debug seed override, and
+    embarks. Do not expose this as a model-chosen gameplay action.
+
+    Args:
+        character: Character id or visible name. Defaults to IRONCLAD.
+        seed: Run seed to apply before embarking.
+    """
+    try:
+        return await _post({"action": "eval_start_run", "character": character, "seed": seed})
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool()
 async def get_profile() -> str:
     """Get the current profile's persistent progress summary.
 

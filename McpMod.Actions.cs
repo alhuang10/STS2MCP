@@ -44,6 +44,8 @@ namespace STS2_MCP;
 
 public static partial class McpMod
 {
+    private const string EvalSeedOverridePropertyName = "DebugSeedOverride";
+
     private static Dictionary<string, object?> ExecuteAction(string action, Dictionary<string, JsonElement> data)
     {
         if (!RunManager.Instance.IsInProgress)
@@ -89,6 +91,133 @@ public static partial class McpMod
             "crystal_sphere_proceed" => ExecuteCrystalSphereProceed(),
             _ => Error($"Unknown action: {action}")
         };
+    }
+
+    internal static Dictionary<string, object?> ExecuteEvalStartRun(Dictionary<string, JsonElement> data)
+    {
+        if (RunManager.Instance.IsInProgress)
+            return Error("A run is already in progress. Return to main menu or abandon it before starting an eval run.");
+
+        var seed = data.TryGetValue("seed", out var seedElem) ? seedElem.GetString()?.Trim() : null;
+        if (string.IsNullOrWhiteSpace(seed))
+            return Error("eval_start_run requires a non-empty 'seed' field.");
+
+        var character = data.TryGetValue("character", out var characterElem) ? characterElem.GetString()?.Trim() : null;
+        if (string.IsNullOrWhiteSpace(character))
+            character = "IRONCLAD";
+
+        var tree = Engine.GetMainLoop() as SceneTree;
+        if (tree?.Root == null)
+            return Error("Cannot access scene tree");
+
+        var charSelect = FindFirst<NCharacterSelectScreen>(tree.Root);
+        if (charSelect == null || !IsNodeVisible(charSelect))
+        {
+            return Error(
+                "eval_start_run requires the standard character-select screen. "
+                + "Navigate with menu_select singleplayer -> standard first, then call eval_start_run.");
+        }
+
+        var selected = ExecuteCharacterSelectMenuOption(charSelect, character, null);
+        if (!IsOkResult(selected))
+            return selected;
+
+        var seedOverride = SetEvalDebugSeedOverride(tree.Root, seed);
+        if (!IsOkResult(seedOverride))
+            return seedOverride;
+
+        var embarked = ExecuteCharacterSelectMenuOption(charSelect, "embark", null);
+        if (!IsOkResult(embarked))
+        {
+            ClearEvalDebugSeedOverride(tree.Root);
+            return embarked;
+        }
+
+        return new Dictionary<string, object?>
+        {
+            ["status"] = "ok",
+            ["message"] = $"Starting eval run as {character} with seed {seed}",
+            ["action"] = "eval_start_run",
+            ["character"] = character,
+            ["seed"] = seed,
+            ["setup"] = new Dictionary<string, object?>
+            {
+                ["selected_character"] = selected,
+                ["seed_override"] = seedOverride,
+                ["embark"] = embarked
+            }
+        };
+    }
+
+    private static bool IsOkResult(Dictionary<string, object?> result)
+    {
+        return result.TryGetValue("status", out var status)
+            && string.Equals(status?.ToString(), "ok", System.StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static Dictionary<string, object?> SetEvalDebugSeedOverride(Node root, string seed)
+    {
+        var gameNode = FindFirstNodeByTypeName(root, "MegaCrit.Sts2.Core.Nodes.NGame");
+        if (gameNode == null)
+            return Error("Could not find NGame node for DebugSeedOverride.");
+
+        var property = gameNode.GetType().GetProperty(
+            EvalSeedOverridePropertyName,
+            System.Reflection.BindingFlags.Instance |
+            System.Reflection.BindingFlags.Static |
+            System.Reflection.BindingFlags.Public |
+            System.Reflection.BindingFlags.NonPublic);
+        var setter = property?.GetSetMethod(nonPublic: true);
+        if (property == null || setter == null)
+            return Error("NGame.DebugSeedOverride property is not writable.");
+
+        var target = setter.IsStatic ? null : gameNode;
+        setter.Invoke(target, new object?[] { seed });
+        return new Dictionary<string, object?>
+        {
+            ["status"] = "ok",
+            ["message"] = "Applied eval seed through NGame.DebugSeedOverride",
+            ["seed"] = seed
+        };
+    }
+
+    private static void ClearEvalDebugSeedOverride(Node root)
+    {
+        try
+        {
+            var gameNode = FindFirstNodeByTypeName(root, "MegaCrit.Sts2.Core.Nodes.NGame");
+            var property = gameNode?.GetType().GetProperty(
+                EvalSeedOverridePropertyName,
+                System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.Static |
+                System.Reflection.BindingFlags.Public |
+                System.Reflection.BindingFlags.NonPublic);
+            var setter = property?.GetSetMethod(nonPublic: true);
+            if (property == null || setter == null)
+                return;
+
+            var target = setter.IsStatic ? null : gameNode;
+            setter.Invoke(target, new object?[] { null });
+        }
+        catch { }
+    }
+
+    private static Node? FindFirstNodeByTypeName(Node root, string fullName)
+    {
+        if (root.GetType().FullName == fullName)
+            return root;
+
+        foreach (var child in root.GetChildren())
+        {
+            if (child is Node childNode)
+            {
+                var found = FindFirstNodeByTypeName(childNode, fullName);
+                if (found != null)
+                    return found;
+            }
+        }
+
+        return null;
     }
 
     private static Dictionary<string, object?> ExecutePlayCard(Player player, Dictionary<string, JsonElement> data)

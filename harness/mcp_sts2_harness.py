@@ -59,6 +59,7 @@ EXCLUDED_TOOL_NAMES = {
     "list_profiles",
     "switch_profile",
     "delete_profile",
+    "eval_start_run",
 }
 
 LOCAL_ACTIONS = {

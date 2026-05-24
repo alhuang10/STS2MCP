@@ -453,6 +453,24 @@ public static partial class McpMod
 
         string action = actionElem.GetString() ?? "";
 
+        // Eval setup is intentionally explicit and separate from normal action
+        // dispatch. It can run before a run exists, but should never appear in a
+        // model-generated legal action menu.
+        if (action == "eval_start_run")
+        {
+            try
+            {
+                var resultTask = RunOnMainThread(() => ExecuteEvalStartRun(parsed));
+                var result = resultTask.GetAwaiter().GetResult();
+                SendJson(response, result);
+            }
+            catch (Exception ex)
+            {
+                SendError(response, 500, $"Eval start failed: {ex.Message}");
+            }
+            return;
+        }
+
         // Handle menu actions separately (no run required)
         if (action == "menu_select")
         {

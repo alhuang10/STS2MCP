@@ -89,6 +89,33 @@ It creates a subprocess for `mcp/server.py`, calls `get_game_state`, asks the
 configured model for one action, executes that MCP tool, then repeats. Use
 `--dry-run` to inspect the chosen action without changing the game.
 
+## Eval Run Setup
+
+The mod exposes an explicit eval-only setup action for deterministic runs:
+
+```json
+{"action":"eval_start_run","character":"IRONCLAD","seed":"CW967RN0QC"}
+```
+
+This bypasses profile-locked seed UI by applying the game's debug seed override
+before embarking. It expects the game to already be on the standard
+singleplayer character-select screen, so navigate there first:
+
+```bash
+curl -s -X POST http://localhost:15526/api/v1/singleplayer \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"menu_select","option":"singleplayer"}'
+curl -s -X POST http://localhost:15526/api/v1/singleplayer \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"menu_select","option":"standard"}'
+curl -s -X POST http://localhost:15526/api/v1/singleplayer \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"eval_start_run","character":"IRONCLAD","seed":"CW967RN0QC"}'
+```
+
+`eval_start_run` is excluded from the model-visible legal action menu and is
+intended only for harness-controlled benchmark setup.
+
 ## Trace Viewer
 
 The MCP harness now asks the model to choose from fully-instantiated legal
