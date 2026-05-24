@@ -42,6 +42,7 @@ run the MCP harness with the id before the port:
 .local/mcp-venv/bin/python harness/mcp_sts2_harness.py \
   --runpod-id i6qkeo2utydx8c-64411136 \
   --model Qwen3.6-27B \
+  --thinking off \
   --steps 300 --sleep 0.05 --show-results
 ```
 
@@ -57,6 +58,7 @@ Useful remote flags:
 - `--runpod-port 8000`: exposed Runpod proxy port.
 - `--runpod-domain proxy.runpod.net`: proxy domain, if Runpod changes it.
 - `--llm-url https://.../v1`: explicit OpenAI-compatible API base URL; this overrides Runpod URL generation.
+- `--thinking auto|on|off`: omit or send `chat_template_kwargs.enable_thinking` for Qwen-style servers. `LLM_THINKING=off` is the equivalent environment-variable form.
 
 ## Run a Few Actions
 
@@ -72,6 +74,7 @@ Useful flags:
 - `--sleep 1.5`: wait between actions so the game UI can settle.
 - `--llm-url http://127.0.0.1:8080/v1`: point at a different OpenAI-compatible server.
 - `--runpod-id i6qkeo2utydx8c-64411136`: build `https://<id>-8000.proxy.runpod.net/v1`.
+- `--thinking off`: send `chat_template_kwargs.enable_thinking=false` to servers that support that per-request override.
 - `--sts2-url http://localhost:15526`: point at a non-default STS2_MCP mod server.
 
 The harness logs JSONL traces under `logs/`.
@@ -125,6 +128,7 @@ For a repeatable benchmark run, start STS2 at the main menu and run:
   --seeded-eval \
   --runpod-id i6qkeo2utydx8c-64411136 \
   --model Qwen3.6-27B \
+  --thinking off \
   --sleep 0.05
 ```
 

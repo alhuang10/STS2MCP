@@ -2517,7 +2517,7 @@ def compact_llm_response(response: Json) -> Json:
 
 
 def model_request_trace(args: argparse.Namespace, messages: list[Json], prompt_metadata: Json) -> Json:
-    return {
+    request = {
         "llm_url": args.llm_url,
         "llm_source": getattr(args, "llm_source", "custom"),
         "model": args.model,
@@ -2526,6 +2526,10 @@ def model_request_trace(args: argparse.Namespace, messages: list[Json], prompt_m
         "prompt": prompt_metadata,
         "messages": clone_messages(messages),
     }
+    chat_template_kwargs = getattr(args, "chat_template_kwargs", None)
+    if chat_template_kwargs is not None:
+        request["chat_template_kwargs"] = chat_template_kwargs
+    return request
 
 
 def choose_model_action(
@@ -2562,6 +2566,7 @@ def choose_model_action(
             args.temperature,
             args.max_tokens,
             args.llm_timeout,
+            getattr(args, "chat_template_kwargs", None),
         )
         action = ""
         action_args: Json = {}

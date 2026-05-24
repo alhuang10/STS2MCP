@@ -34,6 +34,7 @@ DEFAULT_RUNPOD_LLM_MODEL = "Qwen3.6-27B"
 DEFAULT_RUNPOD_PORT = 8000
 DEFAULT_RUNPOD_DOMAIN = "proxy.runpod.net"
 DEFAULT_HTTP_USER_AGENT = "STS2MCP-Harness/0.1"
+LLM_THINKING_CHOICES = ("auto", "on", "off")
 
 
 @dataclass(frozen=True)
@@ -424,6 +425,19 @@ def env_int(name: str, default: int) -> int:
     return int(raw)
 
 
+def env_llm_thinking() -> str:
+    raw = (os.environ.get("LLM_THINKING") or "").strip().lower()
+    if not raw:
+        return "auto"
+    if raw in ("auto", "default"):
+        return "auto"
+    if raw in ("1", "true", "yes", "on", "enable", "enabled"):
+        return "on"
+    if raw in ("0", "false", "no", "off", "disable", "disabled"):
+        return "off"
+    raise ValueError(f"LLM_THINKING must be one of {', '.join(LLM_THINKING_CHOICES)}")
+
+
 def ensure_openai_v1_url(base_url: str) -> str:
     url = base_url.strip().rstrip("/")
     if url.endswith("/v1"):
@@ -484,6 +498,22 @@ def add_llm_arguments(parser: argparse.ArgumentParser) -> None:
         help="Runpod proxy domain used with --runpod-id.",
     )
     parser.add_argument("--model", help="Model name to send to the OpenAI-compatible chat endpoint.")
+    parser.add_argument(
+        "--thinking",
+        choices=LLM_THINKING_CHOICES,
+        default=env_llm_thinking(),
+        help=(
+            "Per-request model thinking override. "
+            "'on'/'off' sends chat_template_kwargs.enable_thinking; 'auto' omits it."
+        ),
+    )
+
+
+def chat_template_kwargs_for_args(args: argparse.Namespace) -> Json | None:
+    thinking = getattr(args, "thinking", "auto")
+    if thinking == "auto":
+        return None
+    return {"enable_thinking": thinking == "on"}
 
 
 def resolve_llm_args(args: argparse.Namespace) -> argparse.Namespace:
@@ -518,6 +548,7 @@ def resolve_llm_args(args: argparse.Namespace) -> argparse.Namespace:
             args.model = os.environ.get("LLM_MODEL") or DEFAULT_LOCAL_LLM_MODEL
 
     args.llm_source = source
+    args.chat_template_kwargs = chat_template_kwargs_for_args(args)
     return args
 
 
@@ -881,6 +912,7 @@ def call_llm(
     temperature: float,
     max_tokens: int,
     timeout: float,
+    chat_template_kwargs: Json | None = None,
 ) -> tuple[str, Json]:
     payload = {
         "model": model,
@@ -889,6 +921,8 @@ def call_llm(
         "max_tokens": max_tokens,
         "stream": False,
     }
+    if chat_template_kwargs is not None:
+        payload["chat_template_kwargs"] = chat_template_kwargs
     response = request_json(
         "POST",
         build_url(llm_url, "/chat/completions"),
@@ -980,6 +1014,7 @@ def run(args: argparse.Namespace) -> int:
                 args.temperature,
                 args.max_tokens,
                 args.llm_timeout,
+                getattr(args, "chat_template_kwargs", None),
             )
             parsed = extract_json_object(raw_text)
             action, action_args, rationale = normalize_action(parsed)
