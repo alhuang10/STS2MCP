@@ -145,13 +145,13 @@ actions. Each step builds a `valid_actions` list where every item has an
 `id`, MCP `tool`, concrete `args`, and a short summary. The model should return:
 
 ```json
-{"action_id":"one_listed_id"}
+{"action_id":"one_listed_id","rationale":"short public reason"}
 ```
 
 The harness resolves `action_id` back to the attached MCP tool and args. This
 avoids asking the model to invent indices, targets, or required tool arguments.
-If the model is run with explicit reasoning enabled, reasoning should live in
-the model's reasoning trace rather than a separate JSON `rationale` field.
+If explicit model reasoning is enabled, the trace viewer can show that full
+reasoning separately; the JSON `rationale` remains a concise public summary.
 
 Prompt text for the MCP harness lives under `harness/prompts/` and is loaded by
 version. The default is `v1` for both the system and user prompt templates.

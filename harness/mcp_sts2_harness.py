@@ -2471,7 +2471,7 @@ def normalize_action_id_choice(raw: Json, actions: list[LegalAction], tools: dic
                 return candidate, rationale
         raise ValueError(
             "model returned tool/args instead of action_id, and those args do not match a listed valid action. "
-            "Return only {\"action_id\":\"...\"}."
+            "Return only {\"action_id\":\"...\",\"rationale\":\"...\"}."
         )
 
     raise ValueError("model response must include string field 'action_id'")
@@ -2492,7 +2492,7 @@ Current state has not changed:
 valid_actions:
 {valid_actions_json(legal_actions)}
 
-Return corrected JSON only: {{"action_id":"one listed id"}}."""
+Return corrected JSON only: {{"action_id":"one listed id","rationale":"short public reason"}}."""
 
 
 def clone_messages(messages: list[Json]) -> list[Json]:
