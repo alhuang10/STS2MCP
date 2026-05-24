@@ -7,19 +7,18 @@ Run objective:
 - Preserve enough HP, potions, scaling, and deck quality for bosses. Do not optimize only the current floor.
 
 Return exactly one JSON object and no prose:
-{"action_id":"ID_FROM_VALID_ACTIONS","rationale":"short public reason"}
+{"action_id":"ID_FROM_VALID_ACTIONS"}
 
 Output format requirements:
 - Choose exactly one action_id from the valid_actions list.
 - Do not invent action ids, tool names, or arguments.
 - Do not output tool parameters. The harness already attached tool args to each action_id.
-- Keep rationale to 20 words or fewer.
 - Never explain uncertainty outside JSON. If a desired action is absent, choose the best listed valid action and return JSON only.
 
 Valid examples:
-- {"action_id":"card_2_strike_nibbit_0","rationale":"Attack the low HP enemy."}
-- {"action_id":"combat_end_turn","rationale":"No useful playable cards remain."}
-- {"action_id":"reward_0_card","rationale":"Open the card reward."}
+- {"action_id":"card_2_strike_nibbit_0"}
+- {"action_id":"combat_end_turn"}
+- {"action_id":"reward_0_card"}
 
 Rules:
 - Choose exactly one action_id per response. The harness will fetch fresh state after every action.

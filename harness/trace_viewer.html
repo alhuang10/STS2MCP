@@ -254,6 +254,10 @@
       background: #64748b;
     }
 
+    .status.info {
+      background: var(--blue);
+    }
+
     .content {
       display: grid;
       gap: 14px;
@@ -568,7 +572,27 @@
       return { records, errors };
     }
 
+    function recordKind(record) {
+      if (record?.phase === "eval_setup") return "setup";
+      if (record?.phase === "post_action_settle") return "settle";
+      return "step";
+    }
+
+    function isModelStep(record) {
+      return recordKind(record) === "step";
+    }
+
+    function stateTypeOf(record) {
+      return record?.state?.state_type || record?.state_for_prompt?.state_type || "unknown";
+    }
+
     function resultStatus(record) {
+      const kind = recordKind(record);
+      if (kind === "setup") {
+        if (record.result && typeof record.result === "object") return record.result.status || "setup";
+        return "setup";
+      }
+      if (kind === "settle") return "settled";
       if (record.error) return "error";
       const result = record.result;
       if (result && typeof result === "object") return result.status || "object";
@@ -580,6 +604,7 @@
       if (status === "ok" || status === "dry_run" || status === "stopped") return "ok";
       if (status === "wait") return "wait";
       if (status === "error") return "err";
+      if (status === "setup" || status === "settled") return "info";
       return "unknown";
     }
 
@@ -610,6 +635,42 @@
     function actionOf(record) {
       const attempt = finalAttempt(record);
       return attempt?.normalized?.action || record.parsed?.action || record.parsed?.tool || "none";
+    }
+
+    function displayStepLabel(record, index) {
+      const kind = recordKind(record);
+      if (kind === "setup") return "setup";
+      if (kind === "settle") return `#${record.step ?? index + 1} settle`;
+      return `#${record.step ?? index + 1}`;
+    }
+
+    function displayActionOf(record) {
+      const kind = recordKind(record);
+      if (kind === "setup") return record.event || "eval_setup";
+      if (kind === "settle") return record.action ? `settled after ${record.action}` : "settled";
+      return actionOf(record);
+    }
+
+    function displaySubtext(record) {
+      const kind = recordKind(record);
+      if (kind === "setup") {
+        const result = record.result;
+        return result?.message || record.event || "eval setup";
+      }
+      if (kind === "settle") return "post-action state poll";
+      return finalAttempt(record)?.normalized?.rationale || record.error || "";
+    }
+
+    function recordIdentity(record, index) {
+      if (!record) return "";
+      return [
+        recordKind(record),
+        record.step ?? "",
+        record.phase ?? "",
+        record.event ?? "",
+        actionOf(record),
+        index
+      ].join("|");
     }
 
     function argsOf(record) {
@@ -669,7 +730,7 @@
         const usage = usageOf(record);
         return sum + Number(usage.total_tokens || 0);
       }, 0);
-      const actions = app.records.filter((record) => actionOf(record) !== "none").length;
+      const actions = app.records.filter((record) => isModelStep(record) && actionOf(record) !== "none").length;
       el.recordCount.textContent = String(app.records.length);
       el.errorCount.textContent = String(app.records.filter((record) => record.error || resultStatus(record) === "error").length + app.parseErrors.length);
       el.actionCount.textContent = String(actions);
@@ -684,15 +745,15 @@
       }
       el.steps.innerHTML = app.records.map((record, index) => {
         const status = resultStatus(record);
-        const state = record.state?.state_type || record.state_for_prompt?.state_type || "unknown";
-        const action = actionOf(record);
+        const state = stateTypeOf(record);
+        const action = displayActionOf(record);
         const active = index === app.selected ? " active" : "";
         return `
           <button class="step${active}" type="button" data-index="${index}">
-            <span class="step-num">#${escapeHtml(record.step ?? index + 1)}</span>
+            <span class="step-num">${escapeHtml(displayStepLabel(record, index))}</span>
             <span class="step-main">
               <strong>${escapeHtml(state)} -> ${escapeHtml(action)}</strong>
-              <span>${escapeHtml(finalAttempt(record)?.normalized?.rationale || record.error || "")}</span>
+              <span>${escapeHtml(displaySubtext(record))}</span>
             </span>
             <span class="status ${statusClass(status)}">${escapeHtml(status)}</span>
           </button>
@@ -710,9 +771,9 @@
         return;
       }
       const reasoning = splitReasoning(record).reasoning;
-      el.metricStep.textContent = String(record.step ?? app.selected + 1);
-      el.metricState.textContent = record.state?.state_type || record.state_for_prompt?.state_type || "unknown";
-      el.metricAction.textContent = actionOf(record);
+      el.metricStep.textContent = displayStepLabel(record, app.selected);
+      el.metricState.textContent = stateTypeOf(record);
+      el.metricAction.textContent = displayActionOf(record);
       el.metricResult.textContent = resultStatus(record);
       el.metricReasoning.textContent = reasoning ? `${reasoning.length} chars` : "none";
     }
@@ -721,10 +782,13 @@
       const attempt = finalAttempt(record);
       const usage = usageOf(record);
       return `
-        <dl class="kv"><dt>Step</dt><dd>${escapeHtml(record.step ?? app.selected + 1)}</dd></dl>
-        <dl class="kv"><dt>State type</dt><dd>${escapeHtml(record.state?.state_type || record.state_for_prompt?.state_type || "unknown")}</dd></dl>
+        <dl class="kv"><dt>Record kind</dt><dd>${escapeHtml(recordKind(record))}</dd></dl>
+        <dl class="kv"><dt>Phase</dt><dd>${escapeHtml(record.phase || "model_step")}</dd></dl>
+        <dl class="kv"><dt>Step</dt><dd>${escapeHtml(displayStepLabel(record, app.selected))}</dd></dl>
+        <dl class="kv"><dt>Event</dt><dd>${escapeHtml(record.event || "")}</dd></dl>
+        <dl class="kv"><dt>State type</dt><dd>${escapeHtml(stateTypeOf(record))}</dd></dl>
         <dl class="kv"><dt>Action id</dt><dd><code>${escapeHtml(actionIdOf(record) || "not logged")}</code></dd></dl>
-        <dl class="kv"><dt>Action</dt><dd><code>${escapeHtml(actionOf(record))}</code></dd></dl>
+        <dl class="kv"><dt>Action</dt><dd><code>${escapeHtml(displayActionOf(record))}</code></dd></dl>
         <dl class="kv"><dt>Args</dt><dd><code>${escapeHtml(pretty(argsOf(record)))}</code></dd></dl>
         <dl class="kv"><dt>Rationale</dt><dd>${escapeHtml(attempt?.normalized?.rationale || "")}</dd></dl>
         <dl class="kv"><dt>Validation</dt><dd>${escapeHtml(attempt?.validation_error || "accepted")}</dd></dl>
@@ -856,16 +920,21 @@
 
     async function loadServerLog(name, keepSelection = false) {
       if (!name) return;
-      const oldStep = app.records[app.selected]?.step;
+      const oldIndex = app.selected;
+      const oldKey = recordIdentity(app.records[app.selected], oldIndex);
       const response = await fetch(`/api/logs/${encodeURIComponent(name)}`, { cache: "no-store" });
       if (!response.ok) throw new Error(`Unable to load ${name}`);
       const text = await response.text();
       const parsed = parseJsonl(text);
       app.logName = name;
       setRecords(parsed.records, parsed.errors, `logs/${name}`);
-      if (keepSelection && oldStep !== undefined) {
-        const index = app.records.findIndex((record) => record.step === oldStep);
-        if (index >= 0) app.selected = index;
+      if (keepSelection) {
+        const index = app.records.findIndex((record, nextIndex) => recordIdentity(record, nextIndex) === oldKey);
+        if (index >= 0) {
+          app.selected = index;
+        } else if (oldIndex >= 0 && oldIndex < app.records.length) {
+          app.selected = oldIndex;
+        }
       }
       render();
     }
