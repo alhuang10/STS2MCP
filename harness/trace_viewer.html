@@ -38,7 +38,8 @@
 
     button,
     input,
-    select {
+    select,
+    textarea {
       font: inherit;
     }
 
@@ -177,6 +178,22 @@
     }
 
     .stat span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .replay-controls {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .replay-controls .wide {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      gap: 7px;
       color: var(--muted);
       font-size: 12px;
     }
@@ -402,9 +419,133 @@
       overflow-wrap: anywhere;
     }
 
+    .replay-grid,
+    .annotation-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+      gap: 12px;
+    }
+
+    .state-summary,
+    .action-list,
+    .form-stack {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+    }
+
+    .state-card,
+    .action-option {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 10px;
+      min-width: 0;
+    }
+
+    .state-card h3,
+    .action-option h3 {
+      margin: 0 0 6px;
+      font-size: 13px;
+    }
+
+    .state-card p,
+    .state-card ul {
+      margin: 0;
+      color: var(--ink);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .state-card ul {
+      padding-left: 18px;
+    }
+
+    .action-option {
+      display: grid;
+      gap: 6px;
+      text-align: left;
+      width: 100%;
+    }
+
+    .action-option.selected {
+      border-color: var(--blue);
+      background: #f0f7ff;
+    }
+
+    .action-meta {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      align-items: center;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 3px 7px;
+      background: #eef2f7;
+      color: #475569;
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+
+    .form-row {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .form-row input,
+    .form-row select,
+    .form-row textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 9px 10px;
+      background: #fff;
+      color: var(--ink);
+      font-weight: 400;
+    }
+
+    .form-row textarea {
+      min-height: 180px;
+      resize: vertical;
+      line-height: 1.45;
+    }
+
+    .save-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .save-status {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .save-status.ok {
+      color: var(--green);
+      font-weight: 700;
+    }
+
+    .save-status.err {
+      color: var(--red);
+      font-weight: 700;
+    }
+
     @media (max-width: 1050px) {
       .layout,
-      .split {
+      .split,
+      .replay-grid,
+      .annotation-grid {
         grid-template-columns: 1fr;
       }
 
@@ -473,6 +614,14 @@
             <div class="stat"><b id="actionCount">0</b><span>actions</span></div>
             <div class="stat"><b id="tokenCount">0</b><span>tokens</span></div>
           </div>
+          <div class="replay-controls">
+            <button id="prevStep" type="button">Previous</button>
+            <button id="nextStep" type="button">Next</button>
+            <label class="wide">
+              <input id="modelOnly" type="checkbox" checked>
+              Step through model decisions only
+            </label>
+          </div>
         </div>
         <div id="steps" class="steps">
           <div class="empty">Load a trace log.</div>
@@ -493,6 +642,8 @@
         <section class="panel">
           <div class="tabs" id="tabs">
             <button type="button" data-tab="overview" class="active">Overview</button>
+            <button type="button" data-tab="replay">Replay</button>
+            <button type="button" data-tab="dpo">DPO</button>
             <button type="button" data-tab="prompt">Prompt</button>
             <button type="button" data-tab="reasoning">Reasoning</button>
             <button type="button" data-tab="action">Action</button>
@@ -517,7 +668,9 @@
       source: "",
       logName: "",
       serverAvailable: false,
-      refreshTimer: null
+      refreshTimer: null,
+      modelOnly: true,
+      drafts: {}
     };
 
     const el = {
@@ -526,6 +679,9 @@
       refreshButton: document.getElementById("refreshButton"),
       autoRefresh: document.getElementById("autoRefresh"),
       fileInput: document.getElementById("fileInput"),
+      prevStep: document.getElementById("prevStep"),
+      nextStep: document.getElementById("nextStep"),
+      modelOnly: document.getElementById("modelOnly"),
       recordCount: document.getElementById("recordCount"),
       errorCount: document.getElementById("errorCount"),
       actionCount: document.getElementById("actionCount"),
@@ -717,6 +873,349 @@
       return { reasoning, finalText };
     }
 
+    function validActionsOf(record) {
+      const topLevel = record?.valid_actions;
+      if (Array.isArray(topLevel) && topLevel.length) return topLevel;
+      const traceActions = record?.model_trace?.valid_actions;
+      if (Array.isArray(traceActions)) return traceActions;
+      return [];
+    }
+
+    function selectedLegalAction(record) {
+      const actionId = actionIdOf(record);
+      return validActionsOf(record).find((action) => action.id === actionId) || null;
+    }
+
+    function formatArgs(args) {
+      const text = pretty(args || {});
+      return text === "{}" ? "{}" : text;
+    }
+
+    function compactList(items, formatter, emptyText = "none") {
+      if (!Array.isArray(items) || !items.length) return emptyText;
+      return items.map(formatter).filter(Boolean).join(", ") || emptyText;
+    }
+
+    function cardName(card, index) {
+      const name = card?.name || card?.card_name || card?.id || `card ${index}`;
+      const parts = [`#${card?.index ?? index}: ${name}`];
+      if (card?.type) parts.push(card.type);
+      if (card?.cost !== undefined) parts.push(`cost ${card.cost}`);
+      if (card?.can_play !== undefined) parts.push(card.can_play ? "playable" : "not playable");
+      if (card?.damage !== undefined) parts.push(`${card.damage} dmg`);
+      if (card?.block !== undefined) parts.push(`${card.block} block`);
+      return parts.join(" | ");
+    }
+
+    function namedThing(item, index) {
+      if (typeof item === "string") return item;
+      const name = item?.name || item?.title || item?.id || `item ${index}`;
+      const detail = item?.counter !== undefined && item?.counter !== null ? ` (${item.counter})` : "";
+      return `${name}${detail}`;
+    }
+
+    function potionName(potion, index) {
+      if (typeof potion === "string") return potion;
+      const slot = potion?.slot !== undefined ? `#${potion.slot}: ` : `#${index}: `;
+      const name = potion?.name || potion?.id || "potion";
+      const target = potion?.target_type ? ` | ${potion.target_type}` : "";
+      return `${slot}${name}${target}`;
+    }
+
+    function numericCount(value) {
+      return Number.isFinite(Number(value)) ? Number(value) : 0;
+    }
+
+    function deckTotalText(player) {
+      const deck = Array.isArray(player.deck) ? player.deck : Array.isArray(player.master_deck) ? player.master_deck : null;
+      if (deck) return `${deck.length} cards`;
+      if (Number.isFinite(Number(player.deck_count))) return `${Number(player.deck_count)} cards`;
+
+      const handCount = Array.isArray(player.hand) ? player.hand.length : 0;
+      const drawCount = Number.isFinite(Number(player.draw_pile_count)) ? Number(player.draw_pile_count) : Array.isArray(player.draw_pile) ? player.draw_pile.length : null;
+      const discardCount = Number.isFinite(Number(player.discard_pile_count)) ? Number(player.discard_pile_count) : Array.isArray(player.discard_pile) ? player.discard_pile.length : null;
+      const exhaustCount = Number.isFinite(Number(player.exhaust_pile_count)) ? Number(player.exhaust_pile_count) : Array.isArray(player.exhaust_pile) ? player.exhaust_pile.length : null;
+      const knownCounts = [drawCount, discardCount, exhaustCount].filter((count) => count !== null);
+      if (!knownCounts.length && !handCount) return "";
+
+      const total = handCount + numericCount(drawCount) + numericCount(discardCount) + numericCount(exhaustCount);
+      const pieces = [
+        drawCount !== null ? `draw ${drawCount}` : "",
+        `hand ${handCount}`,
+        discardCount !== null ? `discard ${discardCount}` : "",
+        exhaustCount !== null ? `exhaust ${exhaustCount}` : ""
+      ].filter(Boolean).join(", ");
+      return `${total} cards (${pieces})`;
+    }
+
+    function combatHandText(player, battle) {
+      const hand = Array.isArray(player.hand) ? player.hand : battle && Array.isArray(battle.hand) ? battle.hand : [];
+      if (hand.length) return compactList(hand, cardName);
+      if (battle?.is_play_phase === false) return "none (draw/resolution pending)";
+      return "none";
+    }
+
+    function enemyName(enemy, index) {
+      const name = enemy?.name || enemy?.id || `enemy ${index}`;
+      const hp = enemy?.hp ?? enemy?.current_hp;
+      const maxHp = enemy?.max_hp;
+      const hpText = hp !== undefined ? `HP ${hp}${maxHp !== undefined ? `/${maxHp}` : ""}` : "HP ?";
+      const block = enemy?.block ? `block ${enemy.block}` : "";
+      const intent = enemy?.intent || enemy?.intent_type || enemy?.move || "";
+      const damage = enemy?.intent_damage ?? enemy?.damage ?? enemy?.attack_damage;
+      const damageText = damage !== undefined ? `damage ${damage}` : "";
+      return [name, hpText, block, intent, damageText].filter(Boolean).join(" | ");
+    }
+
+    function stateSections(record) {
+      const state = record?.state || record?.state_for_prompt || {};
+      const sections = [];
+      const run = state.run || {};
+      const player = state.player || {};
+      const runLine = [
+        run.act !== undefined ? `Act ${run.act}` : "",
+        run.floor !== undefined ? `Floor ${run.floor}` : "",
+        run.ascension !== undefined ? `A${run.ascension}` : ""
+      ].filter(Boolean).join(" | ");
+      const playerLine = [
+        player.character,
+        player.hp !== undefined ? `HP ${player.hp}/${player.max_hp ?? "?"}` : "",
+        player.block ? `block ${player.block}` : "",
+        player.energy !== undefined ? `energy ${player.energy}/${player.max_energy ?? "?"}` : "",
+        player.gold !== undefined ? `${player.gold} gold` : "",
+        deckTotalText(player) ? `deck ${deckTotalText(player)}` : ""
+      ].filter(Boolean).join(" | ");
+      if (runLine || playerLine) {
+        sections.push({
+          title: "Run",
+          lines: [
+            runLine,
+            playerLine,
+            `Relics: ${compactList(player.relics, namedThing)}`,
+            `Potions: ${compactList(player.potions, potionName)}${player.max_potion_slots !== undefined ? ` (${Array.isArray(player.potions) ? player.potions.length : 0}/${player.max_potion_slots} slots)` : ""}`
+          ].filter(Boolean)
+        });
+      }
+
+      const battle = state.battle || state.combat;
+      if (battle && typeof battle === "object") {
+        const energy = battle.energy ?? battle.player_energy ?? player.energy ?? state.energy;
+        const turn = battle.turn !== undefined ? `Turn ${battle.turn}` : "";
+        const combatLine = [
+          turn,
+          battle.round !== undefined ? `Round ${battle.round}` : "",
+          battle.is_play_phase !== undefined ? (battle.is_play_phase ? "play phase" : "not play phase") : "",
+          energy !== undefined ? `Energy ${energy}${player.max_energy !== undefined ? `/${player.max_energy}` : ""}` : ""
+        ].filter(Boolean).join(" | ");
+        sections.push({
+          title: "Combat",
+          lines: [
+            combatLine,
+            `Enemies: ${compactList(battle.enemies, enemyName)}`,
+            `Hand: ${combatHandText(player, battle)}`
+          ].filter(Boolean)
+        });
+      }
+
+      const event = state.event;
+      if (event && typeof event === "object") {
+        sections.push({
+          title: `Event: ${event.event_name || event.event_id || "event"}`,
+          lines: [
+            event.body,
+            `Options: ${compactList(event.options, (option) => {
+              const title = option?.title || option?.name || `option ${option?.index}`;
+              const desc = option?.description ? ` - ${option.description}` : "";
+              return `#${option?.index ?? "?"}: ${title}${desc}`;
+            })}`
+          ].filter(Boolean)
+        });
+      }
+
+      const rewards = state.rewards;
+      if (rewards && typeof rewards === "object") {
+        sections.push({
+          title: "Rewards",
+          lines: [
+            `Items: ${compactList(rewards.items, (item) => `#${item?.index ?? "?"}: ${item?.name || item?.type || item?.id || "reward"}`)}`,
+            `Cards: ${compactList(rewards.card_choices || rewards.cards, cardName)}`
+          ].filter(Boolean)
+        });
+      }
+
+      const cardSelect = state.card_select || state.card_selection || state.deck_select;
+      if (cardSelect && typeof cardSelect === "object") {
+        sections.push({
+          title: "Card Selection",
+          lines: [
+            cardSelect.screen_type ? `Screen: ${cardSelect.screen_type}` : "",
+            cardSelect.can_confirm !== undefined ? `Can confirm: ${cardSelect.can_confirm}` : "",
+            `Cards: ${compactList(cardSelect.cards || cardSelect.deck || cardSelect.options, cardName)}`
+          ].filter(Boolean)
+        });
+      }
+
+      const map = state.map;
+      if (map && typeof map === "object") {
+        const pos = map.current_position;
+        sections.push({
+          title: "Map",
+          lines: [
+            pos ? `Current: row ${pos.row ?? "?"}, col ${pos.col ?? "?"}, ${pos.type || "unknown"}` : "",
+            map.next_option_count !== undefined ? `${map.next_option_count} next path options` : "",
+            map.boss?.name ? `Boss: ${map.boss.name}` : ""
+          ].filter(Boolean)
+        });
+      }
+
+      if (state.menu_screen) {
+        sections.push({ title: "Menu", lines: [`Screen: ${state.menu_screen}`, `Options: ${compactList(state.options, (option) => option)}`] });
+      }
+
+      if (!sections.length) {
+        sections.push({ title: "State", lines: [`State type: ${stateTypeOf(record)}`] });
+      }
+      return sections;
+    }
+
+    function renderReadableState(record) {
+      return `
+        <div class="state-summary">
+          ${stateSections(record).map((section) => `
+            <div class="state-card">
+              <h3>${escapeHtml(section.title)}</h3>
+              <ul>${section.lines.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>
+            </div>
+          `).join("")}
+        </div>
+      `;
+    }
+
+    function renderActionOption(action, selectedId = "", button = true) {
+      const tag = button ? "button" : "div";
+      const selected = action.id === selectedId ? " selected" : "";
+      const attrs = button ? ` type="button" data-use-action-id="${escapeHtml(action.id || "")}"` : "";
+      return `
+        <${tag} class="action-option${selected}"${attrs}>
+          <div class="action-meta">
+            <span class="pill">${escapeHtml(action.id || "no-id")}</span>
+            <span>${escapeHtml(action.category || "action")}</span>
+            <span>${escapeHtml(action.tool || "")}</span>
+          </div>
+          <h3>${escapeHtml(action.summary || action.id || "Action")}</h3>
+          <code>${escapeHtml(formatArgs(action.args || {}))}</code>
+        </${tag}>
+      `;
+    }
+
+    function firstSentence(text, maxChars = 180) {
+      const value = String(text || "").trim();
+      if (!value) return "";
+      const match = value.match(/^.*?[.!?](?:\s|$)/);
+      const sentence = (match ? match[0] : value).trim();
+      return sentence.length <= maxChars ? sentence : `${sentence.slice(0, maxChars - 1).trim()}...`;
+    }
+
+    function draftKey(record, index = app.selected) {
+      return recordIdentity(record, index);
+    }
+
+    function draftFor(record, index = app.selected) {
+      const key = draftKey(record, index);
+      if (!app.drafts[key]) {
+        app.drafts[key] = {
+          chosenActionId: "",
+          rationale: "",
+          reasoning: "",
+          notes: "",
+          status: ""
+        };
+      }
+      return app.drafts[key];
+    }
+
+    function setDraftAction(record, actionId) {
+      const draft = draftFor(record);
+      draft.chosenActionId = actionId;
+      const action = validActionsOf(record).find((item) => item.id === actionId);
+      if (action && !draft.rationale.trim()) {
+        draft.rationale = firstSentence(action.summary || action.id, 120);
+      }
+    }
+
+    function assistantContent(reasoning, actionId, rationale) {
+      const finalJson = JSON.stringify({ action_id: actionId, rationale: rationale || "" });
+      const trimmed = String(reasoning || "").trim();
+      if (!trimmed) return finalJson;
+      return `<think>\n${trimmed}\n</think>\n\n${finalJson}`;
+    }
+
+    function rejectedDecision(record) {
+      const attempt = finalAttempt(record);
+      const split = splitReasoning(record, attempt);
+      return {
+        action_id: actionIdOf(record),
+        action: attempt?.normalized?.action || "",
+        args: attempt?.normalized?.args || {},
+        rationale: attempt?.normalized?.rationale || "",
+        reasoning: split.reasoning,
+        final_text: split.finalText,
+        raw_text: rawTextOf(record, attempt),
+        validation_error: attempt?.validation_error || null
+      };
+    }
+
+    function buildDpoAnnotation(record) {
+      const draft = draftFor(record);
+      const actions = validActionsOf(record);
+      const chosenAction = actions.find((action) => action.id === draft.chosenActionId);
+      if (!chosenAction) throw new Error("Choose the corrected action first.");
+      const reasoning = draft.reasoning.trim();
+      if (!reasoning) throw new Error("Add human reasoning before saving.");
+      const rationale = draft.rationale.trim() || firstSentence(chosenAction.summary || chosenAction.id, 120);
+      const attempt = finalAttempt(record);
+      const promptMessages = attempt?.request?.messages || [];
+      const rejected = rejectedDecision(record);
+      const chosen = {
+        action_id: chosenAction.id,
+        action: chosenAction.tool || "",
+        args: chosenAction.args || {},
+        rationale,
+        reasoning,
+        final_text: JSON.stringify({ action_id: chosenAction.id, rationale }),
+        assistant_content: assistantContent(reasoning, chosenAction.id, rationale)
+      };
+      const rejectedContent = rejected.raw_text || assistantContent(rejected.reasoning, rejected.action_id, rejected.rationale);
+      return {
+        kind: "sts2_dpo_annotation",
+        schema_version: 1,
+        created_at: new Date().toISOString(),
+        source: {
+          log_name: app.logName || "",
+          source_label: app.source || "",
+          record_index: app.selected,
+          step: record.step ?? null,
+          record_kind: recordKind(record),
+          model: attempt?.request?.model || "",
+          llm_url: attempt?.request?.llm_url || ""
+        },
+        prompt: {
+          metadata: record?.model_trace?.prompt || attempt?.request?.prompt || {},
+          messages: promptMessages
+        },
+        game_state: record.state || record.state_for_prompt || {},
+        valid_actions: actions,
+        rejected,
+        chosen,
+        dpo: {
+          prompt_messages: promptMessages,
+          chosen_messages: [{ role: "assistant", content: chosen.assistant_content }],
+          rejected_messages: [{ role: "assistant", content: rejectedContent }]
+        },
+        annotator_notes: draft.notes.trim()
+      };
+    }
+
     function setRecords(records, errors, source) {
       app.records = records;
       app.parseErrors = errors;
@@ -794,6 +1293,105 @@
         <dl class="kv"><dt>Validation</dt><dd>${escapeHtml(attempt?.validation_error || "accepted")}</dd></dl>
         <dl class="kv"><dt>Result</dt><dd>${escapeHtml(resultStatus(record))}</dd></dl>
         <dl class="kv"><dt>Tokens</dt><dd>${escapeHtml(pretty(usage))}</dd></dl>
+      `;
+    }
+
+    function renderReplay(record) {
+      const attempt = finalAttempt(record);
+      const chosenByModel = selectedLegalAction(record);
+      const actions = validActionsOf(record);
+      return `
+        <div class="replay-grid">
+          <div class="block">
+            <h2>Readable game state</h2>
+            ${renderReadableState(record)}
+          </div>
+          <div class="block">
+            <h2>Model decision</h2>
+            <div class="state-summary">
+              <div class="state-card">
+                <h3>${escapeHtml(actionIdOf(record) || displayActionOf(record))}</h3>
+                <p>${escapeHtml(attempt?.normalized?.rationale || "No rationale logged.")}</p>
+              </div>
+              <div class="state-card">
+                <h3>Reasoning</h3>
+                <p>${escapeHtml(splitReasoning(record, attempt).reasoning || "No emitted reasoning logged for this step.")}</p>
+              </div>
+              ${chosenByModel ? renderActionOption(chosenByModel, actionIdOf(record), false) : ""}
+            </div>
+          </div>
+        </div>
+        <div class="block" style="margin-top:12px">
+          <h2>Valid actions shown to model</h2>
+          <div class="action-list">
+            ${actions.length ? actions.map((action) => renderActionOption(action, actionIdOf(record), false)).join("") : '<div class="empty">No valid actions were logged for this step.</div>'}
+          </div>
+        </div>
+      `;
+    }
+
+    function renderDpo(record) {
+      if (!isModelStep(record)) {
+        return '<div class="empty">DPO samples are only available for model decision records.</div>';
+      }
+      const draft = draftFor(record);
+      const actions = validActionsOf(record);
+      const rejected = rejectedDecision(record);
+      const selectedId = draft.chosenActionId;
+      const chosenAction = actions.find((action) => action.id === selectedId);
+      const sameAction = selectedId && selectedId === rejected.action_id;
+      return `
+        <div class="annotation-grid">
+          <div class="block">
+            <h2>Rejected model decision</h2>
+            <div class="state-summary">
+              <div class="state-card">
+                <h3>${escapeHtml(rejected.action_id || rejected.action || "No action")}</h3>
+                <p>${escapeHtml(rejected.rationale || "No rationale logged.")}</p>
+              </div>
+              <div class="state-card">
+                <h3>Model reasoning</h3>
+                <p>${escapeHtml(rejected.reasoning || "No emitted reasoning logged for this step.")}</p>
+              </div>
+              <div class="state-card">
+                <h3>Readable state</h3>
+                <ul>${stateSections(record).flatMap((section) => section.lines.slice(0, 3).map((line) => `${section.title}: ${line}`)).slice(0, 8).map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>
+              </div>
+            </div>
+          </div>
+          <div class="block">
+            <h2>Chosen human correction</h2>
+            <div class="form-stack">
+              <label class="form-row">Correct action
+                <select id="dpoActionSelect">
+                  <option value="">Choose a valid action...</option>
+                  ${actions.map((action) => `<option value="${escapeHtml(action.id || "")}" ${action.id === selectedId ? "selected" : ""}>${escapeHtml(action.id || "")} - ${escapeHtml(action.summary || action.tool || "")}</option>`).join("")}
+                </select>
+              </label>
+              <label class="form-row">Short rationale
+                <input id="dpoRationale" type="text" value="${escapeHtml(draft.rationale)}" placeholder="Short public reason for the final JSON">
+              </label>
+              <label class="form-row">Human reasoning trace
+                <textarea id="dpoReasoning" placeholder="Narrate the strategic reasoning that makes this action better.">${escapeHtml(draft.reasoning)}</textarea>
+              </label>
+              <label class="form-row">Annotator notes
+                <input id="dpoNotes" type="text" value="${escapeHtml(draft.notes)}" placeholder="Optional private note about why this sample matters">
+              </label>
+              ${sameAction ? '<div class="state-card"><p>Chosen action matches the model action. This can still compare reasoning, but it is not an action preference pair.</p></div>' : ""}
+              ${chosenAction ? renderActionOption(chosenAction, selectedId, false) : ""}
+              <div class="save-row">
+                <button id="saveDpo" type="button">Save DPO sample</button>
+                <span id="dpoStatus" class="save-status">${escapeHtml(draft.status || "")}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="block" style="margin-top:12px">
+          <h2>Pick from valid actions</h2>
+          <div class="action-list">
+            ${actions.length ? actions.map((action) => renderActionOption(action, selectedId, true)).join("") : '<div class="empty">No valid actions were logged for this step.</div>'}
+          </div>
+        </div>
       `;
     }
 
@@ -878,6 +1476,8 @@
         return;
       }
       if (app.activeTab === "overview") el.details.innerHTML = renderOverview(record);
+      if (app.activeTab === "replay") el.details.innerHTML = renderReplay(record);
+      if (app.activeTab === "dpo") el.details.innerHTML = renderDpo(record);
       if (app.activeTab === "prompt") el.details.innerHTML = renderPrompt(record);
       if (app.activeTab === "reasoning") el.details.innerHTML = renderReasoning(record);
       if (app.activeTab === "action") el.details.innerHTML = renderAction(record);
@@ -947,6 +1547,66 @@
       }
     }
 
+    function moveSelection(delta) {
+      if (!app.records.length) return;
+      let next = app.selected;
+      for (;;) {
+        next += delta;
+        if (next < 0 || next >= app.records.length) return;
+        if (!app.modelOnly || isModelStep(app.records[next])) {
+          app.selected = next;
+          render();
+          return;
+        }
+      }
+    }
+
+    function updateDpoDraftFromFields(record) {
+      const draft = draftFor(record);
+      const actionSelect = document.getElementById("dpoActionSelect");
+      const rationale = document.getElementById("dpoRationale");
+      const reasoning = document.getElementById("dpoReasoning");
+      const notes = document.getElementById("dpoNotes");
+      if (actionSelect) draft.chosenActionId = actionSelect.value;
+      if (rationale) draft.rationale = rationale.value;
+      if (reasoning) draft.reasoning = reasoning.value;
+      if (notes) draft.notes = notes.value;
+      return draft;
+    }
+
+    function setDpoStatus(record, text, kind = "") {
+      const draft = draftFor(record);
+      draft.status = text;
+      const status = document.getElementById("dpoStatus");
+      if (status) {
+        status.textContent = text;
+        status.className = `save-status ${kind}`.trim();
+      }
+    }
+
+    async function saveDpoAnnotation() {
+      const record = app.records[app.selected];
+      if (!record) return;
+      try {
+        updateDpoDraftFromFields(record);
+        setDpoStatus(record, "Saving...");
+        const payload = buildDpoAnnotation(record);
+        const response = await fetch("/api/dpo-annotations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const text = await response.text();
+        if (!response.ok) throw new Error(text || `HTTP ${response.status}`);
+        const result = JSON.parse(text);
+        const count = result?.annotation?.records;
+        const path = result?.annotation?.path || "annotation file";
+        setDpoStatus(record, `Saved${count ? ` #${count}` : ""} to ${path}`, "ok");
+      } catch (error) {
+        setDpoStatus(record, String(error.message || error), "err");
+      }
+    }
+
     el.steps.addEventListener("click", (event) => {
       const button = event.target.closest("[data-index]");
       if (!button) return;
@@ -962,12 +1622,49 @@
     });
 
     el.details.addEventListener("click", (event) => {
+      const actionButton = event.target.closest("[data-use-action-id]");
+      if (actionButton) {
+        const record = app.records[app.selected];
+        setDraftAction(record, actionButton.dataset.useActionId || "");
+        renderDetails();
+        return;
+      }
+      if (event.target.closest("#saveDpo")) {
+        saveDpoAnnotation();
+        return;
+      }
       const button = event.target.closest("[data-attempt]");
       if (!button) return;
       const record = app.records[app.selected];
       const attempt = attempts(record)[Number(button.dataset.attempt)];
       document.getElementById("attemptPrompt").innerHTML = renderMessages(attempt?.request?.messages || []);
       [...el.details.querySelectorAll("[data-attempt]")].forEach((item) => item.classList.toggle("active", item === button));
+    });
+
+    el.details.addEventListener("input", (event) => {
+      if (!event.target.closest("#dpoActionSelect, #dpoRationale, #dpoReasoning, #dpoNotes")) return;
+      const record = app.records[app.selected];
+      updateDpoDraftFromFields(record);
+    });
+
+    el.details.addEventListener("change", (event) => {
+      if (!event.target.closest("#dpoActionSelect")) return;
+      const record = app.records[app.selected];
+      const previousRationale = draftFor(record).rationale.trim();
+      updateDpoDraftFromFields(record);
+      if (!previousRationale) {
+        const draft = draftFor(record);
+        const action = validActionsOf(record).find((item) => item.id === draft.chosenActionId);
+        if (action) draft.rationale = firstSentence(action.summary || action.id, 120);
+      }
+      renderDetails();
+    });
+
+    el.prevStep.addEventListener("click", () => moveSelection(-1));
+    el.nextStep.addEventListener("click", () => moveSelection(1));
+
+    el.modelOnly.addEventListener("change", () => {
+      app.modelOnly = el.modelOnly.checked;
     });
 
     el.logSelect.addEventListener("change", async () => {
@@ -998,6 +1695,13 @@
       const parsed = parseJsonl(text);
       app.logName = "";
       setRecords(parsed.records, parsed.errors, file.name);
+    });
+
+    document.addEventListener("keydown", (event) => {
+      const tagName = event.target?.tagName;
+      if (tagName === "INPUT" || tagName === "TEXTAREA" || tagName === "SELECT") return;
+      if (event.key === "ArrowLeft") moveSelection(-1);
+      if (event.key === "ArrowRight") moveSelection(1);
     });
 
     loadLogsIndex().then(render).catch(render);

@@ -182,7 +182,9 @@ parsed action JSON, validation result, tool result, and token usage.
 Start the viewer:
 
 ```bash
-.local/mcp-venv/bin/python harness/trace_viewer_server.py --port 8765
+.local/mcp-venv/bin/python harness/trace_viewer_server.py \
+  --port 8765 \
+  --annotation-path data/sts2_dpo_annotations.jsonl
 ```
 
 Open `http://127.0.0.1:8765`.
@@ -190,6 +192,16 @@ Open `http://127.0.0.1:8765`.
 If reasoning is enabled and the model emits `<think>...</think>` blocks or a
 reasoning field in the chat response, the viewer shows that under the Reasoning
 tab. Older logs can still be loaded, but they will not include prompt messages.
+
+The Replay tab renders a compact human-readable view of the game state,
+selected model action, emitted reasoning, and valid actions. The DPO tab lets
+you choose the corrected action, write a human reasoning trace, and append a
+JSONL preference sample to `--annotation-path`. Each saved row keeps the prompt
+messages, game state, valid actions, rejected model decision, chosen human
+decision, and ready-to-convert DPO `prompt_messages`/`chosen_messages`/
+`rejected_messages`.
+
+See [`DPO_DATASET.md`](DPO_DATASET.md) for the exact annotation schema.
 
 ## SFT Dataset Conversion
 
